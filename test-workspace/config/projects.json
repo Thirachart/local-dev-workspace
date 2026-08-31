@@ -1,0 +1,17 @@
+[
+  {
+    "id": "proj_ef7c0748",
+    "name": "test-workspace",
+    "path": "D:\\labs\\chat-dev-mcp\\test-workspace",
+    "description": "Project workspace for test-workspace",
+    "isActive": true,
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-17T15:02:22.253Z"
+  }
+]]

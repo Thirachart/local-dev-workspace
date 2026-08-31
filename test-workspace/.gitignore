@@ -1,0 +1,4 @@
+# Security Credentials
+config/auth.json
+auth.json
+node_modules/

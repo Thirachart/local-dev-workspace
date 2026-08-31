@@ -1,0 +1,223 @@
+[
+  {
+    "id": "proj_48d65e47",
+    "name": "chat-dev-mcp",
+    "path": "D:\\labs\\chat-dev-mcp",
+    "description": "Default initial workspace project",
+    "isActive": false,
+    "createdAt": "2026-08-15T23:14:04.259Z",
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    }
+  },
+  {
+    "id": "proj_d5f01128",
+    "name": "ai-skills",
+    "path": "D:\\labs\\ai-skills",
+    "description": "Project workspace for ai-skills",
+    "isActive": false,
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-15T23:25:41.130Z"
+  },
+  {
+    "id": "proj_d689b5a9",
+    "name": "first-app",
+    "path": "/Users/snowbee/Work/labs/first-app",
+    "description": "Project workspace for first-app",
+    "isActive": false,
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-16T00:42:22.606Z"
+  },
+  {
+    "id": "proj_613ebed0",
+    "name": "second-app",
+    "path": "/Users/snowbee/Work/labs/second-app",
+    "description": "Project workspace for second-app",
+    "isActive": false,
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-16T00:49:09.451Z"
+  },
+  {
+    "id": "proj_6a951234",
+    "name": "chat-dev-mcp-mac",
+    "path": "/Users/snowbee/Work/labs/chat-dev-mcp",
+    "description": "Project workspace for chat-dev-mcp-mac",
+    "isActive": false,
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-16T02:24:22.464Z"
+  },
+  {
+    "id": "proj_2d5f4cdd",
+    "name": "subscription service",
+    "path": "d:\\labs\\dat-a",
+    "description": "Project workspace for subscription service",
+    "isActive": false,
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-16T11:00:21.472Z"
+  },
+  {
+    "id": "proj_92badbb5",
+    "name": "dat-a-pdf-extractor-service",
+    "path": "d:\\labs\\dat-a-pdf-extractor-service",
+    "description": "Project workspace for dat-a-pdf-extractor-service",
+    "isActive": false,
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-17T07:24:15.611Z"
+  },
+  {
+    "id": "proj_e2427329",
+    "name": "dat-a-sheet-extractor-service",
+    "path": "D:\\labs\\dat-a-sheet-extractor-service",
+    "description": "Project workspace for dat-a-sheet-extractor-service",
+    "isActive": false,
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-18T03:09:33.140Z"
+  },
+  {
+    "id": "proj_c401d95c",
+    "name": "data-project",
+    "path": "D:\\labs\\DotA\\data-project",
+    "description": "Project workspace for data-project",
+    "isActive": false,
+    "permissions": {
+      "canRead": true,
+      "canWrite": false,
+      "canRunCommand": true,
+      "canUseSkills": false,
+      "canUseHandoff": false
+    },
+    "createdAt": "2026-08-18T03:51:36.302Z"
+  },
+  {
+    "id": "proj_62798c63",
+    "name": "dat-a-data-service",
+    "path": "d:\\labs\\dat-a-data-service",
+    "description": "Project workspace for dat-a-data-service",
+    "isActive": true,
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-19T04:25:24.787Z"
+  },
+  {
+    "id": "proj_3718400e",
+    "name": "temp",
+    "path": "d:\\labs\\test",
+    "description": "Project workspace for temp",
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-21T10:02:08.707Z",
+    "updatedAt": "2026-08-21T11:01:25.686Z"
+  },
+  {
+    "id": "proj_5735649d",
+    "name": "dat-a-integration",
+    "path": "D:\\labs\\dat-a-integration",
+    "description": "Project workspace for dat-a-integration",
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-23T01:01:21.983Z"
+  },
+  {
+    "id": "proj_71472587",
+    "name": "dat-a-document-management-system",
+    "path": "D:\\labs\\dat-a-document-management-system",
+    "description": "Project workspace for dat-a-document-management-system",
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-24T04:21:27.069Z"
+  },
+  {
+    "id": "proj_a0b4d7e8",
+    "name": "mfa",
+    "path": "D:\\labs\\mfa",
+    "description": "Project workspace for mfa",
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-24T08:45:24.465Z"
+  },
+  {
+    "id": "proj_2e01e0f4",
+    "name": "pfas",
+    "path": "d:\\pfas",
+    "description": "Project workspace for pfas",
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true
+    },
+    "createdAt": "2026-08-25T02:48:31.581Z"
+  }
+]

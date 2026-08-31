@@ -1,0 +1,51 @@
+name: MCP v2 Conformance
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-tier1:
+    name: Windows x64 Tier 1
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install Node dependencies
+        run: npm ci
+      - name: Ensure Rust stable toolchain
+        shell: pwsh
+        run: rustup default stable
+      - name: Build Windows native platform bridge
+        run: cargo build --release --manifest-path native/platform-bridge/Cargo.toml
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Unit and conformance tests
+        run: npm test
+      - name: Integration tests
+        run: npm run test:integration
+      - name: Production build
+        run: npm run build
+
+  macos-tier2:
+    name: macOS arm64 Tier 2
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install Node dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Unit and conformance tests
+        run: npm test
+      - name: Integration tests
+        run: npm run test:integration
+      - name: Production build
+        run: npm run build

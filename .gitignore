@@ -1,0 +1,17 @@
+node_modules/
+dist/
+bin/
+logs/
+.chat-dev/tunnel-client/
+config/auth.json
+config/tunnel-auth.json
+config/tunnel-openai.json
+*.log
+*.app
+dist-app-win/
+native/platform-bridge/target/
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db

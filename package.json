@@ -1,0 +1,54 @@
+{
+  "name": "local-dev-tool-mcp",
+  "version": "2.0.0",
+  "description": "Local Dev Tool MCP - Workspace Transaction Layer for AI coding agents (ChatGPT, Claude, Codex) ",
+  "main": "dist/index.js",
+  "bin": {
+    "local-dev-tool-mcp": "./dist/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "start:sse": "node dist/index.js --sse --port 4100",
+    "start:ngrok": "node dist/index.js --ngrok --port 4100",
+    "build:app": "bash scripts/build-mac-app.sh",
+    "build:app:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-app.ps1",
+    "test": "tsx --test test/all-conformance.test.ts",
+    "test:phase2": "tsx --test test/phase2-conformance.test.ts test/platform-adapter.test.ts test/mutation-safe.test.ts",
+    "test:integration": "tsx test/integration-test.ts"
+  },
+  "keywords": [
+    "mcp",
+    "modelcontextprotocol",
+    "claude",
+    "chatgpt",
+    "codex",
+    "developer-tools",
+    "agent"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "@ngrok/ngrok": "^1.7.0",
+    "@vue/compiler-sfc": "^3.5.41",
+    "better-sqlite3": "^13.0.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "glob": "^11.0.1",
+    "node-pty": "^1.1.0",
+    "systray2": "^2.1.4",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.4",
+    "tsup": "^8.3.6",
+    "tsx": "^4.19.3",
+    "typescript": "^5.9.3"
+  }
+}
