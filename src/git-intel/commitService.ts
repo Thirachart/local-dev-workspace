@@ -9,6 +9,7 @@ import { assertGitObservation, getGitObservation } from './gitObservation.js';
 export interface SafeCommitOptions {
   message: string;
   files?: string[];
+  project?: string;
   expectedSnapshotId?: string;
   expectedGitObservationId?: string;
   expectedFileHashes?: Record<string, string>;
@@ -35,11 +36,11 @@ export async function safeGitCommit(
   options: SafeCommitOptions,
   snapshotManager?: SnapshotManager
 ): Promise<SafeCommitResult> {
-  const gitBefore = await assertGitObservation(proc, cwd, options.expectedGitObservationId);
+  const gitBefore = await assertGitObservation(proc, cwd, options.expectedGitObservationId, options.project);
 
   let snapshotBefore = 'unknown';
   if (snapshotManager) {
-    const obsBefore = await snapshotManager.getObservationToken(cwd);
+    const obsBefore = await snapshotManager.getObservationToken(cwd, options.project);
     snapshotBefore = obsBefore.snapshotId;
     if (options.expectedSnapshotId && obsBefore.snapshotId !== options.expectedSnapshotId) {
       const err: any = new Error('[STALE_SNAPSHOT] Workspace state changed before commit.');
@@ -71,7 +72,7 @@ export async function safeGitCommit(
   }
 
   if (options.verificationCommand) {
-    const verifyRes = await proc.runCommand({ command: options.verificationCommand, cwd });
+    const verifyRes = await proc.runCommand({ command: options.verificationCommand, cwd, projectName: options.project });
     if (verifyRes.exitCode !== 0) {
       const err: any = new Error(`[COMMAND_FAILED] Pre-commit verification failed (${options.verificationCommand}).`);
       err.category = 'execution';
@@ -82,7 +83,7 @@ export async function safeGitCommit(
   }
 
   // Re-check HEAD/branch/index after verification and before this function mutates the index.
-  const gitBeforeStage = await getGitObservation(proc, cwd);
+  const gitBeforeStage = await getGitObservation(proc, cwd, options.project);
   if (gitBeforeStage.observationId !== gitBefore.observationId) {
     const err: any = new Error('[STALE_GIT_OBSERVATION] Git state changed during pre-commit verification.');
     err.category = 'conflict';
@@ -94,15 +95,15 @@ export async function safeGitCommit(
   if (options.files?.length) {
     for (const file of options.files) {
       const safe = file.replace(/"/g, '\\"');
-      const addRes = await proc.runCommand({ command: `git add -- "${safe}"`, cwd });
+      const addRes = await proc.runCommand({ command: `git add -- "${safe}"`, cwd, projectName: options.project });
       if (addRes.exitCode !== 0) throw new Error(`Failed to stage ${file}: ${addRes.stderr}`);
     }
   } else {
-    const addAllRes = await proc.runCommand({ command: 'git add -A', cwd });
+    const addAllRes = await proc.runCommand({ command: 'git add -A', cwd, projectName: options.project });
     if (addAllRes.exitCode !== 0) throw new Error(`Failed to stage changes: ${addAllRes.stderr}`);
   }
 
-  const diffCheck = await proc.runCommand({ command: 'git diff --cached --name-only', cwd });
+  const diffCheck = await proc.runCommand({ command: 'git diff --cached --name-only', cwd, projectName: options.project });
   const filesCommitted = diffCheck.stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   if (!filesCommitted.length && !options.allowEmpty) {
     const err: any = new Error('[DIRTY_WORKTREE] Nothing staged to commit.');
@@ -112,7 +113,7 @@ export async function safeGitCommit(
   }
 
   const message = options.message.replace(/"/g, '\\"');
-  const commitRes = await proc.runCommand({ command: `git commit -m "${message}" ${options.allowEmpty ? '--allow-empty' : ''}`, cwd });
+  const commitRes = await proc.runCommand({ command: `git commit -m "${message}" ${options.allowEmpty ? '--allow-empty' : ''}`, cwd, projectName: options.project });
   if (commitRes.exitCode !== 0) {
     const err: any = new Error(`Commit failed: ${commitRes.stderr || commitRes.stdout}`);
     err.category = 'execution';
@@ -120,8 +121,8 @@ export async function safeGitCommit(
     throw err;
   }
 
-  const gitAfter = await getGitObservation(proc, cwd);
-  const snapshotAfter = snapshotManager ? (await snapshotManager.getObservationToken(cwd)).snapshotId : 'unknown';
+  const gitAfter = await getGitObservation(proc, cwd, options.project);
+  const snapshotAfter = snapshotManager ? (await snapshotManager.getObservationToken(cwd, options.project)).snapshotId : 'unknown';
 
   return {
     success: true,

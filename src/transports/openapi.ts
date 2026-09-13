@@ -669,7 +669,7 @@ export function getOpenApiSpec(hostUrl: string, profile: OpenApiProfile = 'core'
     '/api/read_handoff': {
       post: {
         summary: 'Read cross-session handoff notes',
-        description: 'Read previous session progress, pending tasks, and next steps from .chat-dev/handoff.md.',
+        description: 'Read previous session progress, pending tasks, and next steps from server handoff storage with legacy workspace handoff compatibility.',
         operationId: 'readHandoff',
         'x-openai-isConsequential': false,
         requestBody: {
@@ -709,7 +709,7 @@ export function getOpenApiSpec(hostUrl: string, profile: OpenApiProfile = 'core'
                   markdown: { type: 'string', description: 'Alias for content' },
                   summary: { type: 'string', description: 'Summary of what was accomplished' },
                   next_steps: { type: 'array', items: { type: 'string' }, description: 'List of pending TODO items' },
-                  persist: { type: 'string', enum: ['server', 'workspace'], description: 'Storage mode' },
+                  persist: { type: 'string', enum: ['server', 'workspace'], description: 'Storage mode: server stores outside the project working tree; workspace stores HANDOFF.md in the project.' },
                   project: { type: 'string', description: 'Optional project name or path' },
                   cwd: { type: 'string', description: 'Custom working directory' },
                 },

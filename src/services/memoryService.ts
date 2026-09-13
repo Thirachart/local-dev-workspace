@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
 
 export interface ProjectInstructionResult {
   exists: boolean;
@@ -18,6 +19,14 @@ export interface MemoryResult {
 }
 
 export class MemoryService {
+  private readonly serverStateRoot: string;
+
+  constructor(serverStateRoot?: string) {
+    this.serverStateRoot = path.resolve(
+      serverStateRoot || process.env.CHAT_DEV_MCP_STATE_DIR || path.join(os.homedir(), '.chat-dev-mcp')
+    );
+  }
+
   public static readonly INSTRUCTION_FILES = [
     'AGENTS.md',
     'agent.md',
@@ -77,6 +86,29 @@ export class MemoryService {
     return newest;
   }
 
+  private findWorkspaceHandoffFileSync(projectPath: string): { fullPath: string; relativePath: string; mtimeMs: number } | null {
+    const root = path.resolve(projectPath);
+    let newest: { fullPath: string; relativePath: string; mtimeMs: number } | null = null;
+    for (const fileName of ['HANDOFF.md', 'handoff.md', '.handoff.md']) {
+      const fullPath = path.join(root, fileName);
+      if (!fsSync.existsSync(fullPath)) continue;
+      try {
+        const stats = fsSync.statSync(fullPath);
+        if (!newest || stats.mtimeMs > newest.mtimeMs) {
+          newest = { fullPath, relativePath: fileName, mtimeMs: stats.mtimeMs };
+        }
+      } catch {}
+    }
+    return newest;
+  }
+
+  private getServerHandoffPath(projectPath: string): string {
+    const resolved = path.resolve(projectPath);
+    const identity = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    const projectKey = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 24);
+    return path.join(this.serverStateRoot, 'projects', projectKey, 'handoff.md');
+  }
+
   public async readHandoff(projectPath: string, customFilePath?: string): Promise<MemoryResult> {
     const root = path.resolve(projectPath);
     let targetPath: string | null = null;
@@ -89,7 +121,14 @@ export class MemoryService {
         targetPath = null;
       }
     } else {
-      const existing = this.findHandoffFileSync(root);
+      const workspace = this.findHandoffFileSync(root);
+      const serverPath = this.getServerHandoffPath(root);
+      const server = fsSync.existsSync(serverPath)
+        ? { fullPath: serverPath, relativePath: 'server://handoff.md', mtimeMs: fsSync.statSync(serverPath).mtimeMs }
+        : null;
+      const existing = [workspace, server]
+        .filter((item): item is { fullPath: string; relativePath: string; mtimeMs: number } => Boolean(item))
+        .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
       if (existing) {
         targetPath = existing.fullPath;
         targetRelative = existing.relativePath;
@@ -101,7 +140,7 @@ export class MemoryService {
         exists: false,
         filePath: targetRelative,
         content: null,
-        message: `No session handoff file found (checked ${customFilePath || 'HANDOFF.md, handoff.md, .handoff.md, .chat-dev/handoff.md'}). You can create one using write_handoff.`,
+        message: `No session handoff file found (checked ${customFilePath || 'server storage plus HANDOFF.md, handoff.md, .handoff.md, .chat-dev/handoff.md'}). You can create one using write_handoff.`,
       };
     }
 
@@ -143,20 +182,20 @@ export class MemoryService {
 
     const root = path.resolve(projectPath);
     let targetRelative: string;
+    let targetFull: string;
 
     if (explicitPath && explicitPath.trim()) {
       targetRelative = explicitPath.trim();
+      targetFull = path.join(root, targetRelative);
+    } else if (storageMode === 'server') {
+      targetRelative = 'server://handoff.md';
+      targetFull = this.getServerHandoffPath(root);
     } else {
-      const existing = this.findHandoffFileSync(root);
-      targetRelative = existing ? existing.relativePath : (storageMode === 'workspace' ? 'HANDOFF.md' : '.chat-dev/handoff.md');
-      if (!existing && storageMode === 'server') {
-        targetRelative = '.chat-dev/handoff.md';
-      } else if (!existing && storageMode === 'workspace') {
-        targetRelative = 'HANDOFF.md';
-      }
+      const existing = this.findWorkspaceHandoffFileSync(root);
+      targetRelative = existing ? existing.relativePath : 'HANDOFF.md';
+      targetFull = path.join(root, targetRelative);
     }
 
-    const targetFull = path.join(root, targetRelative);
     const dirPath = path.dirname(targetFull);
 
     if (!fsSync.existsSync(dirPath)) {

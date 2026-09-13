@@ -1,7 +1,11 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { ProjectService } from './projectService.js';
+import { AtomicWriter } from '../mutation/atomicWriter.js';
+
+export type WriteFileMode = 'create_only' | 'replace_if_hash' | 'force';
 
 export class FileService {
   public static readonly SENSITIVE_FILE_PATTERNS: RegExp[] = [
@@ -26,6 +30,7 @@ export class FileService {
 
   private projectService?: ProjectService;
   private baseDir: string;
+  private atomicWriter = new AtomicWriter();
 
   constructor(baseDir: string = process.cwd(), projectService?: ProjectService) {
     this.baseDir = path.resolve(baseDir);
@@ -150,17 +155,63 @@ export class FileService {
   public async writeFile(
     targetPath: string,
     content: string,
-    options?: { customCwd?: string; project?: string; allowSensitive?: boolean }
-  ): Promise<{ success: boolean; path: string; bytesWritten: number }> {
+    options?: {
+      customCwd?: string;
+      project?: string;
+      allowSensitive?: boolean;
+      mode?: WriteFileMode;
+      expectedBeforeHash?: string;
+    }
+  ): Promise<{
+    success: boolean;
+    operationId: string;
+    action: 'created' | 'replaced';
+    path: string;
+    bytesWritten: number;
+    beforeHash: string;
+    afterHash: string;
+    replacementProvider: string;
+  }> {
     const { fullPath, relPath } = this.validateAccess(targetPath, 'write', options);
-    const dir = path.dirname(fullPath);
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(fullPath, content, 'utf-8');
-    const stats = await fs.stat(fullPath);
+    const exists = fsSync.existsSync(fullPath);
+    const mode = options?.mode || 'create_only';
+
+    if (mode === 'create_only' && exists) {
+      const err: any = new Error(`[FILE_EXISTS] File "${relPath}" already exists. Use mode="replace_if_hash" with expected_before_hash, or mode="force" explicitly.`);
+      err.category = 'conflict';
+      err.code = 'FILE_EXISTS';
+      throw err;
+    }
+
+    if (mode === 'replace_if_hash') {
+      if (!exists) {
+        const err: any = new Error(`[FILE_NOT_FOUND] Cannot replace "${relPath}" because it does not exist.`);
+        err.category = 'validation';
+        err.code = 'FILE_NOT_FOUND';
+        throw err;
+      }
+      if (!options?.expectedBeforeHash?.trim()) {
+        const err: any = new Error('[EXPECTED_HASH_REQUIRED] mode="replace_if_hash" requires expected_before_hash.');
+        err.category = 'validation';
+        err.code = 'EXPECTED_HASH_REQUIRED';
+        throw err;
+      }
+    }
+
+    const result = await this.atomicWriter.writeAtomic(fullPath, content, {
+      expectedSha256: options?.expectedBeforeHash || undefined,
+      preserveNewline: true,
+    });
+
     return {
       success: true,
+      operationId: `op_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+      action: exists ? 'replaced' : 'created',
       path: relPath, // Return sanitized relative path
-      bytesWritten: stats.size,
+      bytesWritten: result.bytesWritten,
+      beforeHash: result.beforeSha256,
+      afterHash: result.afterSha256,
+      replacementProvider: result.replacementProvider,
     };
   }
 

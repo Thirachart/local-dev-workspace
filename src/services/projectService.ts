@@ -60,6 +60,25 @@ export interface ProjectInfo {
   updatedAt?: string;
 }
 
+export interface ProjectRemovalPlan {
+  projectId: string;
+  projectName: string;
+  targetPath: '.';
+  pathScope: 'project-root';
+  exists: boolean;
+  fileCount: number;
+  directoryCount: number;
+  totalBytes: number;
+  fingerprint: string;
+  confirmationToken: string;
+  expiresAt: string;
+}
+
+interface PendingProjectRemoval extends ProjectRemovalPlan {
+  resolvedPath: string;
+  expiresAtMs: number;
+}
+
 export class ProjectService {
   public static readonly INSTRUCTION_FILES = [
     'AGENTS.md',
@@ -82,6 +101,8 @@ export class ProjectService {
   private globalPermissionsFile: string;
   private globalPermissions: GlobalPermissions = { ...DEFAULT_GLOBAL_PERMISSIONS };
   private projects: Map<string, ProjectInfo> = new Map();
+  private pendingProjectRemovals: Map<string, PendingProjectRemoval> = new Map();
+  private readonly projectRemovalTtlMs = 5 * 60 * 1000;
 
   constructor(baseDir: string = process.cwd()) {
     this.configDir = path.resolve(baseDir, 'config');
@@ -485,7 +506,8 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
 
   public async removeProject(
     idOrName: string,
-    deleteFiles: boolean = false
+    deleteFiles: boolean = false,
+    confirmationToken?: string
   ): Promise<{ success: boolean; message: string; remainingProjects: ProjectInfo[] }> {
     if (!idOrName || typeof idOrName !== 'string' || !idOrName.trim()) {
       throw new Error('Missing project identifier.');
@@ -506,11 +528,48 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
       throw new Error(`Project '${idOrName}' not found.`);
     }
 
-    if (deleteFiles && fsSync.existsSync(target.path)) {
-      await fs.rm(target.path, { recursive: true, force: true });
+    if (deleteFiles) {
+      if (!confirmationToken) {
+        const err: any = new Error('[DESTRUCTIVE_CONFIRMATION_REQUIRED] Deleting project files requires a confirmation_token from prepare_project_removal.');
+        err.category = 'validation';
+        err.code = 'DESTRUCTIVE_CONFIRMATION_REQUIRED';
+        throw err;
+      }
+
+      const pending = this.pendingProjectRemovals.get(confirmationToken);
+      if (!pending || pending.projectId !== target.id) {
+        const err: any = new Error('[INVALID_CONFIRMATION_TOKEN] Project removal confirmation token is invalid for this project.');
+        err.category = 'validation';
+        err.code = 'INVALID_CONFIRMATION_TOKEN';
+        throw err;
+      }
+      if (Date.now() > pending.expiresAtMs) {
+        this.pendingProjectRemovals.delete(confirmationToken);
+        const err: any = new Error('[CONFIRMATION_TOKEN_EXPIRED] Project removal confirmation token has expired.');
+        err.category = 'conflict';
+        err.code = 'CONFIRMATION_TOKEN_EXPIRED';
+        throw err;
+      }
+
+      const current = await this.inspectProjectRemovalTarget(target);
+      if (current.fingerprint !== pending.fingerprint) {
+        const err: any = new Error('[PROJECT_REMOVAL_TARGET_CHANGED] Project contents changed after removal preparation. Prepare removal again before deleting files.');
+        err.category = 'conflict';
+        err.code = 'PROJECT_REMOVAL_TARGET_CHANGED';
+        err.details = { expectedFingerprint: pending.fingerprint, actualFingerprint: current.fingerprint };
+        throw err;
+      }
+
+      if (fsSync.existsSync(target.path)) {
+        await fs.rm(target.path, { recursive: true, force: true });
+      }
+      this.pendingProjectRemovals.delete(confirmationToken);
     }
 
     this.projects.delete(targetKey);
+    for (const [token, pending] of this.pendingProjectRemovals.entries()) {
+      if (pending.projectId === target.id) this.pendingProjectRemovals.delete(token);
+    }
 
     await this.saveProjects();
     return {
@@ -518,6 +577,92 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
       message: `Project '${target.name}' removed successfully.${deleteFiles ? ' (Files deleted)' : ''}`,
       remainingProjects: Array.from(this.projects.values()),
     };
+  }
+
+  public async prepareProjectRemoval(idOrName: string): Promise<ProjectRemovalPlan> {
+    const target = this.findProjectByIdOrName(idOrName);
+    if (!target) {
+      throw new Error(`Project '${idOrName}' not found.`);
+    }
+
+    const inspected = await this.inspectProjectRemovalTarget(target);
+    const confirmationToken = `remove_${crypto.randomBytes(24).toString('hex')}`;
+    const expiresAtMs = Date.now() + this.projectRemovalTtlMs;
+    const plan: PendingProjectRemoval = {
+      projectId: target.id,
+      projectName: target.name,
+      targetPath: '.',
+      pathScope: 'project-root',
+      resolvedPath: path.resolve(target.path),
+      exists: inspected.exists,
+      fileCount: inspected.fileCount,
+      directoryCount: inspected.directoryCount,
+      totalBytes: inspected.totalBytes,
+      fingerprint: inspected.fingerprint,
+      confirmationToken,
+      expiresAt: new Date(expiresAtMs).toISOString(),
+      expiresAtMs,
+    };
+    this.pendingProjectRemovals.set(confirmationToken, plan);
+    const { expiresAtMs: _internalExpiry, resolvedPath: _internalPath, ...publicPlan } = plan;
+    return publicPlan;
+  }
+
+  private findProjectByIdOrName(idOrName: string): ProjectInfo | undefined {
+    const key = idOrName.toLowerCase().trim();
+    return Array.from(this.projects.values()).find(
+      (project) => project.id.toLowerCase() === key || project.name.toLowerCase() === key
+    );
+  }
+
+  private async inspectProjectRemovalTarget(target: ProjectInfo): Promise<{
+    exists: boolean;
+    fileCount: number;
+    directoryCount: number;
+    totalBytes: number;
+    fingerprint: string;
+  }> {
+    const root = path.resolve(target.path);
+    let fileCount = 0;
+    let directoryCount = 0;
+    let totalBytes = 0;
+    const manifest: string[] = [];
+
+    const walk = async (current: string): Promise<void> => {
+      const stat = await fs.lstat(current);
+      const relative = path.relative(root, current).split(path.sep).join('/') || '.';
+      const type = stat.isSymbolicLink() ? 'L' : stat.isDirectory() ? 'D' : stat.isFile() ? 'F' : 'O';
+      manifest.push([
+        type,
+        relative,
+        stat.size,
+        Math.trunc(stat.mtimeMs),
+        Math.trunc(stat.ctimeMs),
+      ].join(':'));
+
+      if (stat.isSymbolicLink() || stat.isFile()) {
+        fileCount += 1;
+        totalBytes += stat.size;
+        return;
+      }
+      if (!stat.isDirectory()) return;
+      directoryCount += 1;
+      const entries = (await fs.readdir(current)).sort((a, b) => a.localeCompare(b));
+      for (const entry of entries) {
+        await walk(path.join(current, entry));
+      }
+    };
+
+    const exists = fsSync.existsSync(root);
+    if (exists) await walk(root);
+    const raw = [
+      target.id,
+      root,
+      exists ? '1' : '0',
+      ...manifest.sort((a, b) => a.localeCompare(b)),
+    ].join('\0');
+    const fingerprint = crypto.createHash('sha256').update(raw).digest('hex');
+    return { exists, fileCount, directoryCount, totalBytes, fingerprint };
   }
 
   public checkPermission(action: 'read' | 'write' | 'command' | 'skills' | 'handoff', customCwd?: string, projectName?: string, sessionId: string = 'global'): {

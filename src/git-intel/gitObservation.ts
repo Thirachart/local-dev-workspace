@@ -8,11 +8,11 @@ export interface GitObservation {
   indexFingerprint: string;
 }
 
-export async function getGitObservation(proc: ProcessService, cwd: string): Promise<GitObservation> {
+export async function getGitObservation(proc: ProcessService, cwd: string, projectName?: string): Promise<GitObservation> {
   const [headRes, branchRes, indexRes] = await Promise.all([
-    proc.runCommand({ command: 'git rev-parse HEAD', cwd }),
-    proc.runCommand({ command: 'git branch --show-current', cwd }),
-    proc.runCommand({ command: 'git diff --cached --raw --no-abbrev -z', cwd }),
+    proc.runCommand({ command: 'git rev-parse HEAD', cwd, projectName }),
+    proc.runCommand({ command: 'git branch --show-current', cwd, projectName }),
+    proc.runCommand({ command: 'git diff --cached --raw --no-abbrev -z', cwd, projectName }),
   ]);
 
   if (headRes.exitCode !== 0) {
@@ -33,9 +33,10 @@ export async function getGitObservation(proc: ProcessService, cwd: string): Prom
 export async function assertGitObservation(
   proc: ProcessService,
   cwd: string,
-  expectedObservationId?: string
+  expectedObservationId?: string,
+  projectName?: string
 ): Promise<GitObservation> {
-  const observation = await getGitObservation(proc, cwd);
+  const observation = await getGitObservation(proc, cwd, projectName);
   if (expectedObservationId && observation.observationId !== expectedObservationId) {
     const err: any = new Error(
       `[STALE_GIT_OBSERVATION] Git state changed. Expected "${expectedObservationId}" but found "${observation.observationId}".`

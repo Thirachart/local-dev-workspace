@@ -29,7 +29,7 @@
   - `ProjectService`: บริหารจัดการ Project Registry และ Session Isolation (`sessionActiveProjects`)
   - `AuthService`: จัดการ Bearer API Key ความปลอดภัย 100%
   - `NgrokService`: จัดการเปิด/ปิด Ngrok Public Tunnel On-demand
-  - `MemoryService`: Auto-discovery ไฟล์กติกา (`AGENTS.md` / `CLAUDE.md`) และ On-demand Handoff (`.chat-dev/handoff.md`)
+  - `MemoryService`: Auto-discovery ไฟล์กติกา (`AGENTS.md` / `CLAUDE.md`) และ On-demand Handoff โดยค่าเริ่มต้นเก็บใน server state ภายนอก working tree พร้อมอ่าน legacy `.chat-dev/handoff.md` ได้
 
 ---
 
@@ -38,4 +38,4 @@
 2. **Bearer API Key**: ทุกการร้องขอผ่าน HTTP `/api/*` ต้องแนบ `Authorization: Bearer <API_KEY>`
 3. **Workspace Boundary**: ห้ามทำหัตถการใดๆ ออกนอกขอบเขตโปรเจกต์ที่ลงทะเบียนไว้
 4. **Session Isolation**: สลับโปรเจกต์แยกตาม `sessionId` ป้องกันการเหยียบกันระหว่างหน้าต่างแชท
-5. **Handoff Convention**: รายการส่งต่องานระยะสั้น (Session Handoff) จะถูกบันทึกผ่าน Tool `write_handoff` โดยใช้ `persist: "server"` (`.chat-dev/handoff.md`, ค่าเริ่มต้นแบบไม่รบกวน Git working tree) หรือ `persist: "workspace"` (`HANDOFF.md` ใน root) หรือระบุ `path` เฉพาะเจาะจง โดยระบบจะ Auto-Discover ไฟล์ที่มีการแก้ไขล่าสุด (`mtime`) และคืนค่า `filePath` ที่บันทึกจริงกลับมาให้อัตโนมัติ
+5. **Handoff Convention**: รายการส่งต่องานระยะสั้น (Session Handoff) จะถูกบันทึกผ่าน Tool `write_handoff` โดยใช้ `persist: "server"` (ค่าเริ่มต้น เก็บใน ChatDev server state ภายนอก project working tree) หรือ `persist: "workspace"` (`HANDOFF.md` ใน root) หรือระบุ `path` เฉพาะเจาะจง โดยระบบยังอ่าน legacy `.chat-dev/handoff.md` ได้ และคืนค่า `filePath` ที่บันทึกจริงกลับมาให้อัตโนมัติ

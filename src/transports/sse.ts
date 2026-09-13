@@ -1121,11 +1121,36 @@ export function startSseTransport(
       }
     });
 
+    app.post('/api/prepare_project_removal', async (req, res) => {
+      const start = Date.now();
+      try {
+        const { name } = req.body;
+        const result = await services.projectService.prepareProjectRemoval(name);
+        logger.logAction({
+          action: 'prepare_project_removal',
+          params: { name },
+          status: 'success',
+          durationMs: Date.now() - start,
+          resultSummary: `Prepared destructive removal for ${result.projectName}`,
+        });
+        res.json(result);
+      } catch (err: any) {
+        logger.logAction({
+          action: 'prepare_project_removal',
+          params: { name: req.body?.name },
+          status: 'error',
+          durationMs: Date.now() - start,
+          error: err.message,
+        });
+        res.status(500).json({ error: err.message });
+      }
+    });
+
     app.post('/api/remove_project', async (req, res) => {
       const start = Date.now();
       try {
-        const { name, delete_files } = req.body;
-        const result = await services.projectService.removeProject(name, delete_files);
+        const { name, delete_files, confirmation_token } = req.body;
+        const result = await services.projectService.removeProject(name, delete_files, confirmation_token);
         logger.logAction({
           action: 'remove_project',
           params: req.body,

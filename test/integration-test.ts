@@ -108,14 +108,18 @@ async function runTests() {
     const patchedFile = await fileService.readFile('patch_test.txt');
     assert.ok(patchedFile.content.includes('const b = 200;'), 'patched content mismatch');
 
-    // 10. Test DiagnosticService (project_diagnostics)
+    // 10. Test DiagnosticService (project_diagnostics) in the isolated workspace.
+    // Do not couple this integration seam to the health of the chat-dev-mcp source tree.
     console.log('10. Testing DiagnosticService...');
     const { DiagnosticService } = await import('../src/services/diagnosticService.js');
-    const rootProcessService = new ProcessService(process.cwd());
-    const diagnosticService = new DiagnosticService(rootProcessService, process.cwd());
-    const diagRes = await diagnosticService.runDiagnostics('typecheck', { customCwd: process.cwd() });
+    await fs.writeFile(path.join(testDir, 'diagnostic.js'), 'export const diagnostic = true;\n', 'utf-8');
+    const diagnosticService = new DiagnosticService(processService, testDir);
+    const diagRes = await diagnosticService.runDiagnostics('typecheck', {
+      customCwd: testDir,
+      command: 'node --check diagnostic.js',
+    });
     assert.ok('success' in diagRes, 'runDiagnostics result should have success property');
-    assert.strictEqual(diagRes.success, true, 'Diagnostic typecheck should pass');
+    assert.strictEqual(diagRes.success, true, 'Explicit isolated diagnostic command should pass');
 
     // 11. Regression Test: CRLF Large File (700 lines) editFile at line 500
     console.log('11. Testing Large CRLF File (700 lines) editFile precision...');
@@ -164,18 +168,22 @@ async function runTests() {
     const { MemoryService } = await import('../src/services/memoryService.js');
     const testProjectService = new ProjectService(testDir);
     const projectsList = testProjectService.listProjects().projects;
-    if (projectsList.length > 0) {
-      }
-    const testMemoryService = new MemoryService();
-    const snapshotService = new SnapshotService(testProjectService, gitService, testMemoryService);
+    const snapshotProject = projectsList[0]?.name;
+    assert.ok(snapshotProject, 'Snapshot integration project should be registered');
+    const testMemoryService = new MemoryService(path.join(testDir, '.server-state'));
+    const snapshotGitService = new GitService(testDir, testProjectService);
+    const snapshotService = new SnapshotService(testProjectService, snapshotGitService, testMemoryService);
     await fileService.writeFile('CLAUDE.md', '# Subscription Service Rules\n- Always run unit tests');
-    const snapshot1 = await snapshotService.getSnapshot();
+    const snapshot1 = await snapshotService.getSnapshot({ project: snapshotProject });
     assert.ok(snapshot1.instructions.contentHash, 'Snapshot contentHash missing');
     assert.strictEqual(snapshot1.instructions.unchanged, false, 'First snapshot should have unchanged=false');
     assert.ok(snapshot1.instructions.content?.includes('Always run unit tests'), 'Snapshot content missing');
 
     // Test with knownInstructionHash (should return unchanged: true and omit content)
-    const snapshot2 = await snapshotService.getSnapshot({ knownInstructionHash: snapshot1.instructions.contentHash });
+    const snapshot2 = await snapshotService.getSnapshot({
+      project: snapshotProject,
+      knownInstructionHash: snapshot1.instructions.contentHash,
+    });
     assert.strictEqual(snapshot2.instructions.unchanged, true, 'Matching hash should set unchanged=true');
     assert.strictEqual(snapshot2.instructions.content, undefined, 'Matching hash should omit content body');
     console.log('Snapshot 2 hash guard verified (Tokens saved: content body successfully omitted!)');
@@ -202,10 +210,10 @@ public class FinancialCorrectionCoordinator
     }
 }`;
     await fileService.writeFile('FinancialCorrectionCoordinator.cs', sampleCSharp);
-    const symbolsRes = await symbolService.listSymbols('FinancialCorrectionCoordinator.cs');
+    const symbolsRes = await symbolService.listSymbols('FinancialCorrectionCoordinator.cs', { project: snapshotProject });
     assert.ok(symbolsRes.totalSymbols >= 2, `Expected at least 2 symbols, got ${symbolsRes.totalSymbols}`);
 
-    const readSymRes = await symbolService.readSymbol('FinancialCorrectionCoordinator.cs', 'ApproveRefundAsync');
+    const readSymRes = await symbolService.readSymbol('FinancialCorrectionCoordinator.cs', 'ApproveRefundAsync', { project: snapshotProject });
     assert.ok(readSymRes.found, 'ApproveRefundAsync not found');
     assert.ok(readSymRes.symbol.content.includes('Task<CorrectionResult> ApproveRefundAsync'), 'Method signature mismatch');
 
@@ -242,9 +250,9 @@ public class FinancialCorrectionCoordinator
     console.log('17. Testing GitWorkflowService in isolated repo...');
     const { GitWorkflowService } = await import('../src/services/gitWorkflowService.js');
     const gitWorkflow = new GitWorkflowService(processService, testDir, testProjectService);
-    const fp = await gitWorkflow.getWorkspaceFingerprint();
+    const fp = await gitWorkflow.getWorkspaceFingerprint(undefined, snapshotProject);
     assert.ok(fp.fingerprint, 'Fingerprint generation failed');
-    const syncStatus = await gitWorkflow.getSyncStatus();
+    const syncStatus = await gitWorkflow.getSyncStatus(undefined, snapshotProject);
     assert.ok(syncStatus.fingerprint, 'SyncStatus missing fingerprint');
     assert.strictEqual(syncStatus.branch, 'main', 'Expected main branch');
 
@@ -277,14 +285,14 @@ export class StripeGateway implements IPaymentGateway {
 }
 `;
     await fileService.writeFile('gateway.ts', sampleTs);
-    const tsSymbols = await symbolService.listSymbols('gateway.ts');
+    const tsSymbols = await symbolService.listSymbols('gateway.ts', { project: snapshotProject });
     assert.strictEqual(tsSymbols.parser, 'typescript-ast', `Expected parser=typescript-ast, got ${tsSymbols.parser}`);
     assert.ok(tsSymbols.totalSymbols >= 2, `Expected >= 2 symbols, got ${tsSymbols.totalSymbols}`);
 
     // 20. Test SymbolService.findReferences
     console.log('21. Testing SymbolService.findReferences...');
     await fileService.writeFile('usage.ts', `import { StripeGateway } from './gateway';\nconst gw = new StripeGateway();`);
-    const refs = await symbolService.findReferences('StripeGateway');
+    const refs = await symbolService.findReferences('StripeGateway', { project: snapshotProject });
     assert.ok(refs.totalMatches >= 2, `Expected >= 2 references of StripeGateway, got ${refs.totalMatches}`);
 
     // 21. Test SearchService.searchWithContext
@@ -297,7 +305,7 @@ export class StripeGateway implements IPaymentGateway {
     // 23. Test MemoryService.writeHandoff with persist="server" vs persist="workspace"
     console.log('23. Testing MemoryService.writeHandoff persist options...');
     const serverHandoff = await testMemoryService.writeHandoff(testDir, 'Server persist test', ['Task A'], 'server');
-    assert.ok(serverHandoff.filePath.includes('.chat-dev'), `Expected .chat-dev path, got ${serverHandoff.filePath}`);
+    assert.strictEqual(serverHandoff.filePath, 'server://handoff.md', `Expected server handoff URI, got ${serverHandoff.filePath}`);
 
     // 24. Test Safe File Operations (delete, move, hash, compare)
     console.log('24. Testing Safe File Operations (delete, move, hash, compare)...');
@@ -317,7 +325,7 @@ export class StripeGateway implements IPaymentGateway {
     await processService.runCommand({ command: 'git checkout -b feature-test-branch', cwd: testDir });
     await fileService.writeFile('feature_file.txt', 'Feature content');
     await gitService.commit({ message: 'Add feature file' });
-    const branchComp = await gitWorkflow.compareBranches('main', 'feature-test-branch');
+    const branchComp = await gitWorkflow.compareBranches('main', 'feature-test-branch', undefined, snapshotProject);
     assert.ok(branchComp.aheadCount >= 1, `Expected >= 1 ahead commit, got ${branchComp.aheadCount}`);
     assert.ok(branchComp.filesChangedCount >= 1, 'Expected at least 1 file changed');
 
@@ -328,6 +336,7 @@ export class StripeGateway implements IPaymentGateway {
     const closeRes = await gitWorkflow.closeFeatureBranch({
       branchName: 'feature-test-branch',
       targetBranch: 'main',
+      project: snapshotProject,
     });
     assert.strictEqual(closeRes.success, true, 'closeFeatureBranch failed');
 

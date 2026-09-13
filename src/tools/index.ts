@@ -23,6 +23,7 @@ import { ProjectPermissionGuard } from '../core/permissions.js';
 import { SnapshotManager } from '../core/snapshotManager.js';
 import { AuditLogger } from '../core/auditLogger.js';
 import { Logger } from '../utils/logger.js';
+import { safeGitCommit } from '../git-intel/commitService.js';
 
 type ToolExtra = { sessionId?: string } | undefined;
 
@@ -91,7 +92,9 @@ export function registerTools(
       ? schema
       : {
           ...schema,
-          expected_snapshot_id: z.string().optional().describe('Optional workspace observation token. Legacy-compatible tools validate it when supplied.'),
+          expected_snapshot_id: metadata.snapshotPolicy === 'required'
+            ? z.string().min(1).describe('Required workspace observation token from get_project_snapshot.workspaceObservationId.')
+            : z.string().optional().describe('Optional workspace observation token. Observe-policy tools validate it when supplied.'),
         };
 
     return (server.tool as any)(name, description, effectiveSchema, async (args: any = {}, ...rest: any[]) => {
@@ -108,6 +111,12 @@ export function registerTools(
         let snapshotBefore: string | undefined;
         if (metadata.snapshotPolicy !== 'none') {
           snapshotBefore = (await coreSnapshotManager.getObservationToken(cwd, project)).snapshotId;
+          if (metadata.snapshotPolicy === 'required' && !args?.expected_snapshot_id) {
+            const err: any = new Error(`[SNAPSHOT_REQUIRED] Tool "${name}" requires expected_snapshot_id from a current workspace observation.`);
+            err.category = 'validation';
+            err.code = 'SNAPSHOT_REQUIRED';
+            throw err;
+          }
           if (args?.expected_snapshot_id && args.expected_snapshot_id !== snapshotBefore) {
             const err: any = new Error(`[STALE_SNAPSHOT] Expected "${args.expected_snapshot_id}" but found "${snapshotBefore}".`);
             err.category = 'conflict';
@@ -219,17 +228,37 @@ export function registerTools(
     }
   );
 
-  // 5. remove_project
+  // 5. prepare_project_removal
+  registerTool(
+    'prepare_project_removal',
+    'Prepare a destructive project-folder deletion and return a short-lived confirmation token bound to the current target fingerprint.',
+    {
+      name: z.string().describe('The project name or id to prepare for destructive removal'),
+    },
+    async ({ name }) => {
+      try {
+        const result = await projectService.prepareProjectRemoval(name);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err: any) {
+        return { isError: true, content: [{ type: 'text', text: `Failed to prepare project removal: ${err.message}` }] };
+      }
+    }
+  );
+
+  // 6. remove_project
   registerTool(
     'remove_project',
-    'Remove/unregister a project from the workspace registry.',
+    'Remove/unregister a project. Deleting files requires a confirmation token from prepare_project_removal.',
     {
       name: z.string().describe('The name of the project to remove'),
       delete_files: z.boolean().optional().describe('Whether to delete the project folder from disk completely (default false)'),
+      confirmation_token: z.string().optional().describe('Required when delete_files=true; obtain from prepare_project_removal.'),
     },
-    async ({ name, delete_files = false }) => {
+    async ({ name, delete_files = false, confirmation_token }) => {
       try {
-        const result = await projectService.removeProject(name, delete_files);
+        const result = await projectService.removeProject(name, delete_files, confirmation_token);
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         };
@@ -395,16 +424,23 @@ export function registerTools(
   // 2. write_file
   registerTool(
     'write_file',
-    'Create a new file or completely overwrite an existing file with the specified content.',
+    'Create or replace a file using an atomic write. Existing files require explicit replace_if_hash or force mode.',
     {
       project: z.string().describe('Required registered project name or id'),
       path: z.string().describe('Relative or absolute path to the file to create or overwrite'),
       content: z.string().describe('The complete file content to write'),
+      mode: z.enum(['create_only', 'replace_if_hash', 'force']).optional().describe('Write mode. Defaults to create_only; force must be explicit.'),
+      expected_before_hash: z.string().optional().describe('Required SHA256 for replace_if_hash; optional extra CAS guard for force.'),
       cwd: z.string().optional().describe('Optional custom working directory'),
     },
-    async ({ project, path, content, cwd }) => {
+    async ({ project, path, content, mode, expected_before_hash, cwd }) => {
       try {
-        const result = await fileService.writeFile(path, content, { customCwd: cwd, project });
+        const result = await fileService.writeFile(path, content, {
+          customCwd: cwd,
+          project,
+          mode,
+          expectedBeforeHash: expected_before_hash,
+        });
         return {
           content: [
             {
@@ -835,7 +871,7 @@ export function registerTools(
   // 18. write_handoff
   registerTool(
     'write_handoff',
-    'Write/update session handoff document with exact markdown content or summary/next_steps. Defaults to non-intrusive server storage (.chat-dev/handoff.md).',
+    'Write/update session handoff document with exact markdown content or summary/next_steps. Defaults to non-intrusive server storage outside the project working tree.',
     {
       path: z.string().optional().describe('Optional custom relative file path for handoff (e.g. HANDOFF.md or .chat-dev/handoff.md)'),
       file_path: z.string().optional().describe('Alias for path'),
@@ -843,7 +879,7 @@ export function registerTools(
       markdown: z.string().optional().describe('Alias for content'),
       summary: z.string().optional().describe('Summary of what was accomplished in this session'),
       next_steps: z.array(z.string()).optional().describe('List of pending TODO items / next tasks for the next session'),
-      persist: z.enum(['server', 'workspace']).optional().describe('Storage mode: "server" (.chat-dev/handoff.md, default) or "workspace" (HANDOFF.md in root)'),
+      persist: z.enum(['server', 'workspace']).optional().describe('Storage mode: "server" (default, outside the project working tree) or "workspace" (HANDOFF.md in root)'),
       project: z.string().describe('Required registered project name or id'),
     },
     async ({ path, file_path, content, markdown, summary, next_steps, persist = 'server', project }) => {
@@ -1033,21 +1069,36 @@ export function registerTools(
   // 23. git_commit
   registerTool(
     'git_commit',
-    'Stage files and create a Git commit with a descriptive commit message directly from chat.',
+    'Safely stage files and create a Git commit with snapshot/Git/file-hash guards and optional pre-commit verification.',
     {
       message: z.string().describe('Descriptive Git commit message'),
       files: z.array(z.string()).optional().describe('List of relative file paths to stage (defaults to all changed files: ["."])'),
+      expected_snapshot_id: z.string().min(1).describe('Required workspace observation token from get_project_snapshot.workspaceObservationId.'),
+      expected_git_observation_id: z.string().optional().describe('Optional Git observation id to reject HEAD/index drift.'),
+      expected_file_hashes: z.record(z.string()).optional().describe('Optional mapping of relative file path to expected SHA256 before staging.'),
+      verification_command: z.string().optional().describe('Optional command that must pass before staging.'),
+      allow_empty: z.boolean().optional().describe('Allow an empty Git commit (default false).'),
       cwd: z.string().optional().describe('Custom working directory relative to project root'),
       project: z.string().describe('Required registered project name or id'),
     },
-    async ({ message, files, cwd, project }) => {
+    async ({ message, files, expected_snapshot_id, expected_git_observation_id, expected_file_hashes, verification_command, allow_empty, cwd, project }) => {
       try {
         const perm = projectService.checkPermission('write', cwd, project);
         if (!perm.allowed) {
           return { isError: true, content: [{ type: 'text', text: perm.reason || 'Permission denied' }] };
         }
 
-        const result = await gitService.commit({ message, files, customCwd: cwd, project });
+        const workingDir = projectService.resolveWorkingDir(cwd, project);
+        const result = await safeGitCommit(processService, workingDir, {
+          message,
+          files,
+          project,
+          expectedSnapshotId: expected_snapshot_id,
+          expectedGitObservationId: expected_git_observation_id,
+          expectedFileHashes: expected_file_hashes,
+          verificationCommand: verification_command,
+          allowEmpty: allow_empty,
+        }, coreSnapshotManager);
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         };
@@ -1106,8 +1157,12 @@ export function registerTools(
           project,
           customCwd: cwd,
         });
+        const observation = await coreSnapshotManager.getObservationToken(cwd, project);
         return {
-          content: [{ type: 'text', text: JSON.stringify(snapshot, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify({
+            ...snapshot,
+            workspaceObservationId: observation.snapshotId,
+          }, null, 2) }],
         };
       } catch (err: any) {
         return { isError: true, content: [{ type: 'text', text: `Snapshot error: ${err.message}` }] };
