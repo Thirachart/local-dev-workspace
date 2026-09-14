@@ -11,6 +11,8 @@ export interface TaskInfo {
   command: string;
   cwd: string;
   startTime: number;
+  endTime?: number;
+  durationMs?: number;
   status: 'running' | 'completed' | 'failed' | 'killed';
   exitCode?: number | null;
   outputBuffer: string[];

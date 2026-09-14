@@ -16,6 +16,7 @@ export interface PublicToolMetadata {
 const definitions: PublicToolMetadata[] = [
   { name: 'list_projects', capability: 'none', mutation: false, snapshotPolicy: 'none', audit: false, compatibility: 'legacy-compatible' },
   { name: 'add_project', capability: 'none', mutation: true, snapshotPolicy: 'none', audit: true, compatibility: 'legacy-compatible' },
+  { name: 'create_project', capability: 'none', mutation: true, snapshotPolicy: 'none', audit: true, compatibility: 'v2-native' },
   { name: 'prepare_project_removal', capability: 'none', mutation: false, snapshotPolicy: 'none', audit: true, compatibility: 'legacy-compatible' },
   { name: 'remove_project', capability: 'none', mutation: true, snapshotPolicy: 'none', audit: true, compatibility: 'legacy-compatible' },
 

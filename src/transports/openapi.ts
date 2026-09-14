@@ -48,6 +48,7 @@ export function getToolCatalog() {
     { path: '/api/workspace_health', name: 'workspace_health', category: 'Workspace & Health', description: 'Fast 1-call comprehensive workspace health & state hub' },
     { path: '/api/get_project_snapshot', name: 'get_project_snapshot', category: 'Workspace & Health', description: 'Comprehensive project snapshot with files, git state, and README' },
     { path: '/api/list_projects', name: 'list_projects', category: 'Workspace & Health', description: 'List all registered projects and workspaces' },
+    { path: '/api/create_project', name: 'create_project', category: 'Workspace & Health', description: 'Create a new project directory and register it explicitly' },
             { path: '/api/project_overview', name: 'project_overview', category: 'Workspace & Health', description: 'Quick project overview and summary' },
     { path: '/api/read_file', name: 'read_file', category: 'File Operations', description: 'Read file contents from active project' },
     { path: '/api/write_file', name: 'write_file', category: 'File Operations', description: 'Create or overwrite file in active project' },
@@ -124,6 +125,31 @@ export function getOpenApiSpec(hostUrl: string, profile: OpenApiProfile = 'core'
         operationId: 'listProjects',
         'x-openai-isConsequential': false,
         responses: { '200': { description: 'List of projects' } },
+      },
+    },
+    '/api/create_project': {
+      post: {
+        summary: 'Create and register a new project directory',
+        description: 'Explicitly create a new directory and register it as a project. Fails if the target path already exists.',
+        operationId: 'createProject',
+        'x-openai-isConsequential': true,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['name', 'path'],
+                properties: {
+                  name: { type: 'string' },
+                  path: { type: 'string' },
+                  description: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Created project' } },
       },
     },
    '/api/read_file': {

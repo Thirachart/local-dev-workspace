@@ -1106,9 +1106,9 @@ export function startSseTransport(
           params: req.body,
           status: 'success',
           durationMs: Date.now() - start,
-          resultSummary: `Added project ${result.name} -> ${result.path}`,
+          resultSummary: `Registered existing project ${result.name}`,
         });
-        res.json({ message: `Project '${result.name}' added successfully`, project: result });
+        res.json({ message: `Project '${result.name}' registered successfully`, project: services.projectService.sanitizeProjectForClient(result) });
       } catch (err: any) {
         logger.logAction({
           action: 'add_project',
@@ -1118,6 +1118,31 @@ export function startSseTransport(
           error: err.message,
         });
         res.status(500).json({ error: err.message });
+      }
+    });
+
+    app.post('/api/create_project', async (req, res) => {
+      const start = Date.now();
+      try {
+        const { name, path: projectPath, description } = req.body;
+        const result = await services.projectService.createProject({ name, path: projectPath, description });
+        logger.logAction({
+          action: 'create_project',
+          params: req.body,
+          status: 'success',
+          durationMs: Date.now() - start,
+          resultSummary: `Created project ${result.name}`,
+        });
+        res.json({ message: `Project '${result.name}' created successfully`, project: services.projectService.sanitizeProjectForClient(result) });
+      } catch (err: any) {
+        logger.logAction({
+          action: 'create_project',
+          params: req.body,
+          status: 'error',
+          durationMs: Date.now() - start,
+          error: err.message,
+        });
+        res.status(400).json({ error: err.message, errorCode: err.code || 'TOOL_ERROR', category: err.category || 'validation' });
       }
     });
 

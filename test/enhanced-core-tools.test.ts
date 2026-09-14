@@ -94,7 +94,7 @@ not ok 3 - should multiply numbers
 
   it('parses unittest OK output', () => {
     const parsed = testRunnerService.parseOutput('Ran 5 tests in 0.123s\n\nOK\n', 'unittest');
-    assert.deepEqual(parsed, { passed: 5, failed: 0, skipped: 0, failures: [] });
+    assert.deepEqual(parsed, { passed: 5, failed: 0, skipped: 0, countKnown: true, failures: [] });
   });
 
   it('parses unittest failure and skipped counts', () => {
@@ -109,7 +109,7 @@ not ok 3 - should multiply numbers
 
   it('parses singular unittest output with whitespace', () => {
     const parsed = testRunnerService.parseOutput('  Ran 1 test in 0.001s\n\n  OK  \n', 'unittest');
-    assert.deepEqual(parsed, { passed: 1, failed: 0, skipped: 0, failures: [] });
+    assert.deepEqual(parsed, { passed: 1, failed: 0, skipped: 0, countKnown: true, failures: [] });
   });
 
   it('uses custom unittest command instead of pytest project metadata', async () => {

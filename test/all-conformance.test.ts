@@ -3,6 +3,7 @@ import './core-snapshot.test.js';
 import './core-permissions-audit.test.js';
 import './mutation-safe.test.js';
 import './p0-safety-regression.test.js';
+import './p1-reliability-regression.test.js';
 import './git-intel.test.js';
 import './git-tracking-regression.test.js';
 import './execution-engine.test.js';

@@ -15,6 +15,9 @@ export interface TestRunResult {
   status: 'passed' | 'failed' | 'error' | 'not_configured';
   framework: string;
   command: string | null;
+  commandPassed: boolean | null;
+  testCountKnown: boolean;
+  parserConfidence: 'high' | 'medium' | 'low';
   passed: number;
   failed: number;
   skipped: number;
@@ -122,11 +125,13 @@ export class TestRunnerService {
     passed: number;
     failed: number;
     skipped: number;
+    countKnown: boolean;
     failures: TestFailureDetail[];
   } {
     let passed = 0;
     let failed = 0;
     let skipped = 0;
+    let countKnown = false;
     const failures: TestFailureDetail[] = [];
 
     const lines = output.split(/\r?\n/);
@@ -136,7 +141,7 @@ export class TestRunnerService {
       const failedSummary = output.match(/\bFAILED\b(?:\s*\(([^)]*)\))?/i);
       const okSummary = /(?:^|\n)\s*OK(?:\s|\(|$)/i.test(output);
       if (!ranMatch && !failedSummary && !okSummary) {
-        return { passed: 0, failed: 0, skipped: 0, failures: [] };
+        return { passed: 0, failed: 0, skipped: 0, countKnown: false, failures: [] };
       }
 
       const total = ranMatch ? Number(ranMatch[1]) : 0;
@@ -145,6 +150,7 @@ export class TestRunnerService {
       skipped = Number(output.match(/\bskipped=(\d+)\b/i)?.[1] || 0);
       failed = failuresCount + errorsCount;
       passed = Math.max(total - failed - skipped, 0);
+      countKnown = Boolean(ranMatch);
 
       if (failed > 0) {
         for (let i = 0; i < lines.length; i++) {
@@ -156,7 +162,18 @@ export class TestRunnerService {
         }
       }
 
-      return { passed, failed, skipped, failures };
+      return { passed, failed, skipped, countKnown, failures };
+    }
+
+    const nodeTests = output.match(/^#\s+tests\s+(\d+)\s*$/im);
+    const nodePass = output.match(/^#\s+pass\s+(\d+)\s*$/im);
+    const nodeFail = output.match(/^#\s+fail\s+(\d+)\s*$/im);
+    const nodeSkipped = output.match(/^#\s+skipped\s+(\d+)\s*$/im);
+    if (nodeTests) {
+      countKnown = true;
+      passed = Number(nodePass?.[1] || 0);
+      failed = Number(nodeFail?.[1] || 0);
+      skipped = Number(nodeSkipped?.[1] || 0);
     }
 
     // 1. Node TAP / node:test parser (e.g. "ok 1 - test name", "not ok 2 - test name")
@@ -179,7 +196,8 @@ export class TestRunnerService {
 
     // 2. Vitest / Jest Summary parser (e.g. "Tests  5 passed, 1 failed, 6 total")
     const vitestMatch = output.match(/Tests\s+((?:(\d+)\s+failed,?\s*)?(?:(\d+)\s+passed,?\s*)?(?:(\d+)\s+skipped,?\s*)?\(?(\d+)\s+total\)?)/i);
-    if (vitestMatch && !inNodeTap) {
+    if (vitestMatch && !nodeTests && !inNodeTap) {
+      countKnown = true;
       const failedMatch = output.match(/(\d+)\s+failed/i);
       const passedMatch = output.match(/(\d+)\s+passed/i);
       const skippedMatch = output.match(/(\d+)\s+skipped/i);
@@ -191,6 +209,7 @@ export class TestRunnerService {
     // 3. Pytest Parser (e.g. "==== 5 passed, 2 failed, 1 skipped in 1.23s ====")
     const pytestMatch = output.match(/=+\s+(?:(\d+)\s+failed,?\s*)?(?:(\d+)\s+passed,?\s*)?(?:(\d+)\s+skipped,?\s*)?in\s+[\d\.]+s\s+=+/i);
     if (pytestMatch) {
+      countKnown = true;
       const failedM = output.match(/(\d+)\s+failed/i);
       const passedM = output.match(/(\d+)\s+passed/i);
       const skippedM = output.match(/(\d+)\s+skipped/i);
@@ -200,15 +219,17 @@ export class TestRunnerService {
     }
 
     // 4. Cargo / Go / Generic Parser Fallback
-    if (passed === 0 && failed === 0) {
+    if (passed === 0 && failed === 0 && !countKnown) {
       const cargoMatch = output.match(/test result:\s+(ok|FAILED)\.\s+(\d+)\s+passed;\s+(\d+)\s+failed;\s+(\d+)\s+ignored/i);
       if (cargoMatch) {
+        countKnown = true;
         passed = parseInt(cargoMatch[2], 10);
         failed = parseInt(cargoMatch[3], 10);
         skipped = parseInt(cargoMatch[4], 10);
       } else {
         const passCountMatch = output.match(/(\d+)\s+(?:tests?\s+)?passed/i);
         const failCountMatch = output.match(/(\d+)\s+(?:tests?\s+)?failed/i);
+        countKnown = Boolean(passCountMatch || failCountMatch);
         if (passCountMatch) passed = parseInt(passCountMatch[1], 10);
         if (failCountMatch) failed = parseInt(failCountMatch[1], 10);
       }
@@ -228,7 +249,8 @@ export class TestRunnerService {
       }
     }
 
-    return { passed, failed, skipped, failures };
+    if (inNodeTap && !nodeTests) countKnown = true;
+    return { passed, failed, skipped, countKnown, failures };
   }
 
   public async runTests(options?: {
@@ -249,6 +271,9 @@ export class TestRunnerService {
         status: 'not_configured',
         framework: detected.framework,
         command: null,
+        commandPassed: null,
+        testCountKnown: false,
+        parserConfidence: 'low',
         passed: 0,
         failed: 0,
         skipped: 0,
@@ -292,14 +317,25 @@ export class TestRunnerService {
     }
 
     const total = parsed.passed + parsed.failed + parsed.skipped;
+    const testCountKnown = parsed.countKnown;
+    const parserConfidence: 'high' | 'medium' | 'low' = testCountKnown
+      ? (detected.framework === 'custom' || detected.framework === 'npm:test' ? 'medium' : 'high')
+      : (detected.framework === 'custom' || detected.framework === 'generic' ? 'low' : 'medium');
     const summary = status === 'passed'
-      ? `✅ All tests passed (${parsed.passed || total} passed in ${durationMs}ms)`
-      : `❌ Tests failed (${parsed.failed} failed, ${parsed.passed} passed in ${durationMs}ms)`;
+      ? testCountKnown
+        ? `✅ All tests passed (${parsed.passed} passed, ${parsed.skipped} skipped in ${durationMs}ms)`
+        : `✅ Test command passed (test count unavailable; parser confidence ${parserConfidence}, ${durationMs}ms)`
+      : testCountKnown
+        ? `❌ Tests failed (${parsed.failed} failed, ${parsed.passed} passed in ${durationMs}ms)`
+        : `❌ Test command failed (test count unavailable; ${durationMs}ms)`;
 
     return {
       status,
       framework: detected.framework,
       command,
+      commandPassed: isSuccess,
+      testCountKnown,
+      parserConfidence,
       passed: parsed.passed,
       failed: parsed.failed,
       skipped: parsed.skipped,

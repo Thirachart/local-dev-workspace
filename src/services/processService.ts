@@ -226,16 +226,18 @@ export class ProcessService {
       if (taskInfo.status !== 'killed') {
         taskInfo.status = code === 0 ? 'completed' : 'failed';
       }
+      taskInfo.endTime = taskInfo.endTime || Date.now();
+      taskInfo.durationMs = taskInfo.durationMs ?? Math.max(0, taskInfo.endTime - taskInfo.startTime);
 
       // A timed-out foreground command is intentionally retained so the caller
       // can observe the promoted background process through task_status.
-      if (taskInfo.timedOut) {
+      if (options.isDaemon || taskInfo.timedOut) {
         const retentionTimer = setTimeout(() => {
           const current = this.tasks.get(taskId);
           if (current?.info.status !== 'running') {
             this.tasks.delete(taskId);
           }
-        }, 5 * 60 * 1000);
+        }, 60 * 60 * 1000);
         retentionTimer.unref?.();
         activeProc.retentionTimer = retentionTimer;
       }
@@ -243,6 +245,8 @@ export class ProcessService {
 
     child.on('error', (err) => {
       taskInfo.status = 'failed';
+      taskInfo.endTime = taskInfo.endTime || Date.now();
+      taskInfo.durationMs = taskInfo.durationMs ?? Math.max(0, taskInfo.endTime - taskInfo.startTime);
       taskInfo.outputBuffer.push(`Process error: ${err.message}`);
     });
 
@@ -331,6 +335,9 @@ export class ProcessService {
       status: string;
       exitCode: number | null | undefined;
       runningTimeMs: number;
+      durationMs: number;
+      startedAt: string;
+      finishedAt?: string;
       recentLogs: string[];
       pid?: number;
       timedOut?: boolean;
@@ -343,7 +350,8 @@ export class ProcessService {
     }
 
     const info = active.info;
-    const runningTimeMs = Date.now() - info.startTime;
+    const processAlive = active.process.exitCode === null && active.process.signalCode === null;
+    const durationMs = info.durationMs ?? Math.max(0, (info.endTime || Date.now()) - info.startTime);
     const recentLogs = info.outputBuffer.slice(-maxLines).map(line => this.sanitizeOutput(line, active.projectRoot));
 
     return {
@@ -354,22 +362,36 @@ export class ProcessService {
         cwd: info.cwd,
         status: info.status,
         exitCode: info.exitCode,
-        runningTimeMs,
+        runningTimeMs: durationMs,
+        durationMs,
+        startedAt: new Date(info.startTime).toISOString(),
+        finishedAt: info.endTime ? new Date(info.endTime).toISOString() : undefined,
         recentLogs,
         pid: info.pid,
         timedOut: info.timedOut,
-        processAlive: active.process.exitCode === null,
+        processAlive,
       },
     };
   }
 
-  public listTasks(projectName?: string): Array<{
+  public listTasks(
+    projectName?: string,
+    options?: {
+      status?: 'running' | 'completed' | 'failed' | 'killed';
+      sinceMs?: number;
+      limit?: number;
+      sort?: 'newest' | 'oldest';
+    }
+  ): Array<{
     id: string;
     command: string;
     cwd: string;
     status: string;
     exitCode: number | null | undefined;
     runningTimeMs: number;
+    durationMs: number;
+    startedAt: string;
+    finishedAt?: string;
     pid?: number;
     timedOut?: boolean;
     processAlive?: boolean;
@@ -378,19 +400,30 @@ export class ProcessService {
     for (const [, active] of this.tasks) {
       if (!this.taskBelongsToProject(active, projectName)) continue;
       const info = active.info;
+      if (options?.status && info.status !== options.status) continue;
+      if (options?.sinceMs && info.startTime < options.sinceMs) continue;
+      const durationMs = info.durationMs ?? Math.max(0, (info.endTime || Date.now()) - info.startTime);
       list.push({
         id: info.id,
         command: info.command,
         cwd: info.cwd,
         status: info.status,
         exitCode: info.exitCode,
-        runningTimeMs: Date.now() - info.startTime,
+        runningTimeMs: durationMs,
+        durationMs,
+        startedAt: new Date(info.startTime).toISOString(),
+        finishedAt: info.endTime ? new Date(info.endTime).toISOString() : undefined,
         pid: info.pid,
         timedOut: info.timedOut,
-        processAlive: active.process.exitCode === null,
+        processAlive: active.process.exitCode === null && active.process.signalCode === null,
       });
     }
-    return list;
+    list.sort((a, b) => {
+      const delta = Date.parse(a.startedAt) - Date.parse(b.startedAt);
+      return options?.sort === 'oldest' ? delta : -delta;
+    });
+    const limit = options?.limit && options.limit > 0 ? Math.min(options.limit, 500) : undefined;
+    return limit ? list.slice(0, limit) : list;
   }
 
   private async waitForProcessExit(child: ChildProcess, timeoutMs = 5000): Promise<boolean> {
@@ -431,6 +464,8 @@ export class ProcessService {
 
     try {
       active.info.status = 'killed';
+      active.info.endTime = Date.now();
+      active.info.durationMs = Math.max(0, active.info.endTime - active.info.startTime);
       if (os.platform() === 'win32' && child.pid) {
         const killer = spawn('taskkill', ['/pid', child.pid.toString(), '/f', '/t'], {
           stdio: 'ignore',
@@ -458,11 +493,32 @@ export class ProcessService {
     command?: string;
     cwd?: string;
     lines?: number;
+    status?: 'all' | 'running' | 'completed' | 'failed' | 'killed';
+    since?: string;
+    limit?: number;
+    sort?: 'newest' | 'oldest';
     projectName?: string;
   }): Promise<any> {
     if (options.action === 'list') {
+      const sinceMs = options.since ? Date.parse(options.since) : undefined;
+      if (options.since && !Number.isFinite(sinceMs)) {
+        throw Object.assign(new Error('since must be a valid ISO-8601 timestamp.'), {
+          code: 'INVALID_TIME_FILTER',
+          category: 'validation',
+        });
+      }
+      const processes = this.listTasks(options.projectName, {
+        status: options.status && options.status !== 'all' ? options.status : undefined,
+        sinceMs,
+        limit: options.limit || 50,
+        sort: options.sort || 'newest',
+      });
       return {
-        processes: this.listTasks(options.projectName),
+        action: 'list',
+        count: processes.length,
+        limit: options.limit || 50,
+        sort: options.sort || 'newest',
+        processes,
       };
     }
 
@@ -511,6 +567,9 @@ export class ProcessService {
         processId: options.processId,
         status: status.task.status,
         runningTimeMs: status.task.runningTimeMs,
+        durationMs: status.task.durationMs,
+        startedAt: status.task.startedAt,
+        finishedAt: status.task.finishedAt,
         logs: status.task.recentLogs,
       };
     }

@@ -27,6 +27,49 @@ import { safeGitCommit } from '../git-intel/commitService.js';
 
 type ToolExtra = { sessionId?: string } | undefined;
 
+type StandardToolError = {
+  errorCode: string;
+  category: 'validation' | 'conflict' | 'permission' | 'not_found' | 'timeout' | 'process' | 'internal';
+  retryable: boolean;
+  message: string;
+  suggestedAction: string;
+};
+
+function buildStandardToolError(input: any, toolName: string): StandardToolError {
+  const rawMessage = typeof input === 'string' ? input : input?.message || String(input || 'Unknown tool error');
+  const bracketCode = rawMessage.match(/^\[([A-Z0-9_]+)\]/)?.[1];
+  const errorCode = input?.code || bracketCode || 'TOOL_ERROR';
+  const upper = `${errorCode} ${rawMessage}`.toUpperCase();
+  let category: StandardToolError['category'] = input?.category || 'internal';
+  if (!input?.category) {
+    if (upper.includes('PERMISSION') || upper.includes('SECURITY')) category = 'permission';
+    else if (upper.includes('NOT_FOUND') || upper.includes('NOT FOUND') || upper.includes('DOES NOT EXIST')) category = 'not_found';
+    else if (upper.includes('CONFLICT') || upper.includes('STALE') || upper.includes('ALREADY EXISTS')) category = 'conflict';
+    else if (upper.includes('TIMEOUT') || upper.includes('TIMED OUT')) category = 'timeout';
+    else if (upper.includes('REQUIRED') || upper.includes('INVALID') || upper.includes('MUST ')) category = 'validation';
+    else if (upper.includes('PROCESS') || upper.includes('COMMAND')) category = 'process';
+  }
+  const retryable = category === 'timeout' || errorCode === 'STALE_SNAPSHOT';
+  const suggestedAction = errorCode === 'STALE_SNAPSHOT'
+    ? 'Refresh the project snapshot and retry with the new workspaceObservationId.'
+    : category === 'validation'
+      ? 'Correct the request parameters and retry.'
+      : category === 'not_found'
+        ? 'Verify the requested project, path, task, or resource exists.'
+        : category === 'permission'
+          ? 'Review project permissions or choose an allowed operation.'
+          : category === 'timeout'
+            ? 'Check task_status or retry with an appropriate timeout.'
+            : `Inspect the ${toolName} error details before retrying.`;
+  return { errorCode, category, retryable, message: rawMessage, suggestedAction };
+}
+
+function normalizeToolErrorResult(result: any, toolName: string): any {
+  if (!result?.isError || result?.structuredContent?.error) return result;
+  const message = result?.content?.find?.((item: any) => item?.type === 'text')?.text || `Tool ${toolName} failed.`;
+  return { ...result, structuredContent: { error: buildStandardToolError(message, toolName) } };
+}
+
 export function registerTools(
   server: McpServer,
   services: {
@@ -125,7 +168,8 @@ export function registerTools(
           }
         }
 
-        const result = await handler(args, ...rest);
+        const rawResult = await handler(args, ...rest);
+        const result = normalizeToolErrorResult(rawResult, name);
         if (metadata.mutation && !result?.isError) {
           let snapshotAfter: string | undefined;
           if (metadata.snapshotPolicy !== 'none') {
@@ -162,9 +206,11 @@ export function registerTools(
           durationMs: Date.now() - startedAt,
           error: err.message || String(err),
         });
+        const standardError = buildStandardToolError(err, name);
         return {
           isError: true,
           content: [{ type: 'text', text: `${err.code ? `[${err.code}] ` : ''}${err.message || String(err)}` }],
+          structuredContent: { error: standardError },
         };
       }
     });
@@ -204,7 +250,7 @@ export function registerTools(
   // 4. add_project
   registerTool(
     'add_project',
-    'Register a new project and directory path into the workspace registry. Automatically creates the directory if it does not exist.',
+    'Register an existing project directory in the workspace registry. Fails if the path does not exist; use create_project to create a new directory intentionally.',
     {
       name: z.string().describe('Unique name for the project (e.g. "my-web-app", "backend-api")'),
       path: z.string().describe('Absolute or relative directory path for the project (e.g. "D:/labs/my-web-app")'),
@@ -218,12 +264,33 @@ export function registerTools(
           content: [
             {
               type: 'text',
-              text: JSON.stringify({ message: `Project '${result.name}' added successfully`, project: result }, null, 2),
+              text: JSON.stringify({ message: `Project '${result.name}' registered successfully`, project: projectService.sanitizeProjectForClient(result) }, null, 2),
             },
           ],
         };
       } catch (err: any) {
         return { isError: true, content: [{ type: 'text', text: `Failed to add project: ${err.message}` }] };
+      }
+    }
+  );
+
+  // 4b. create_project
+  registerTool(
+    'create_project',
+    'Create a new project directory and register it. Fails if the target path already exists so typos cannot silently create the wrong workspace.',
+    {
+      name: z.string().describe('Unique name for the new project'),
+      path: z.string().describe('New directory path to create and register'),
+      description: z.string().optional().describe('Short description of the project'),
+    },
+    async ({ name, path: projectPath, description }) => {
+      try {
+        const result = await projectService.createProject({ name, path: projectPath, description });
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ message: `Project '${result.name}' created successfully`, project: projectService.sanitizeProjectForClient(result) }, null, 2) }],
+        };
+      } catch (err: any) {
+        return { isError: true, content: [{ type: 'text', text: `Failed to create project: ${err.message}` }] };
       }
     }
   );
@@ -682,7 +749,7 @@ export function registerTools(
   // 9. task_status
   registerTool(
     'task_status',
-    'Check the status and read recent output logs of a background task started with run_command, including commands promoted after a timeout.',
+    'Compatibility alias for process_manager logs/status. Check a background task and read recent output without changing it.',
     {
       project: z.string().describe('Required registered project name or id'),
       task_id: z.string().describe('The Task ID returned from run_command'),
@@ -711,25 +778,36 @@ export function registerTools(
   // 10. task_list
   registerTool(
     'task_list',
-    'List all background tasks and their current running status.',
+    'Compatibility alias for process_manager list. List background tasks with optional status/time filters, bounded result count, and stable finished durations.',
     {
       project: z.string().describe('Required registered project name or id'),
+      status: z.enum(['all', 'running', 'completed', 'failed', 'killed']).optional().describe('Filter by task status (default all)'),
+      since: z.string().optional().describe('Only include tasks started at or after this ISO-8601 timestamp'),
+      limit: z.number().int().positive().max(500).optional().describe('Maximum tasks to return (default 50)'),
+      sort: z.enum(['newest', 'oldest']).optional().describe('Sort by start time (default newest)'),
     },
-    async ({ project }) => {
+    async ({ project, status, since, limit, sort }) => {
       try {
-        const result = processService.listTasks(project);
+        const sinceMs = since ? Date.parse(since) : undefined;
+        if (since && !Number.isFinite(sinceMs)) {
+          throw Object.assign(new Error('since must be a valid ISO-8601 timestamp.'), { code: 'INVALID_TIME_FILTER', category: 'validation' });
+        }
+        const result = processService.listTasks(project, {
+          status: status && status !== 'all' ? status : undefined,
+          sinceMs,
+          limit: limit || 50,
+          sort: sort || 'newest',
+        });
         return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({ count: result.length, tasks: result }, null, 2),
-            },
-          ],
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ count: result.length, limit: limit || 50, sort: sort || 'newest', tasks: result }, null, 2),
+          }],
         };
       } catch (err: any) {
         return {
           isError: true,
-          content: [{ type: 'text', text: `Failed to list tasks: ${err.message}` }],
+          content: [{ type: 'text', text: 'Failed to list tasks: ' + err.message }],
         };
       }
     }
@@ -738,7 +816,7 @@ export function registerTools(
   // 11. task_kill
   registerTool(
     'task_kill',
-    'Stop and kill a running background task process.',
+    'Compatibility alias for process_manager stop. Stop a running background task process.',
     {
       project: z.string().describe('Required registered project name or id'),
       task_id: z.string().describe('The Task ID to stop'),
@@ -1546,9 +1624,13 @@ export function registerTools(
       processId: z.string().optional().describe('Task/Process ID to stop, restart, or inspect logs'),
       cwd: z.string().optional().describe('Working directory'),
       lines: z.number().optional().describe('Number of log lines to tail (default: 50)'),
+      status: z.enum(['all', 'running', 'completed', 'failed', 'killed']).optional().describe('Optional status filter for action=list'),
+      since: z.string().optional().describe('Optional ISO-8601 lower bound for action=list'),
+      limit: z.number().int().positive().max(500).optional().describe('Maximum items for action=list (default 50)'),
+      sort: z.enum(['newest', 'oldest']).optional().describe('Sort order for action=list'),
       project: z.string().describe('Required registered project name or id'),
     },
-    async ({ action, command, processId, cwd, lines, project }) => {
+    async ({ action, command, processId, cwd, lines, status, since, limit, sort, project }) => {
       try {
         const perm = projectService.checkPermission('command', cwd, project);
         if (!perm.allowed) {
@@ -1560,6 +1642,10 @@ export function registerTools(
           processId,
           cwd,
           lines,
+          status,
+          since,
+          limit,
+          sort,
           projectName: project,
         });
         return {

@@ -58,6 +58,8 @@ export interface ProjectInfo {
   systemPrompt?: string;
   createdAt: string;
   updatedAt?: string;
+  lastUsedAt?: string;
+  pathExists?: boolean;
 }
 
 export interface ProjectRemovalPlan {
@@ -352,7 +354,11 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
     options?: { limit?: number; offset?: number; compact?: boolean }
   ): { projects: ProjectInfo[]; totalCount: number; limit?: number; offset?: number } {
     let all = Array.from(this.projects.values()).map(p => {
-      const base: ProjectInfo = { ...p };
+      const base: ProjectInfo = {
+        ...p,
+        lastUsedAt: p.lastUsedAt || p.updatedAt || p.createdAt,
+        pathExists: fsSync.existsSync(p.path),
+      };
       if (!sanitize && options?.compact === false) {
         const canUseSkills = p.permissions.canUseSkills !== false;
         base.projectInstructions = this.getProjectInstructionsSync(p.path);
@@ -402,8 +408,10 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
     }
 
     const canUseSkills = target.permissions.canUseSkills !== false;
+    target.lastUsedAt = new Date().toISOString();
     const populated: ProjectInfo = {
       ...target,
+      pathExists: fsSync.existsSync(target.path),
       projectInstructions: this.getProjectInstructionsSync(target.path),
       availableSkills: this.getAvailableSkillsSync(target.path, canUseSkills),
     };
@@ -427,15 +435,30 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
 
     const resolvedPath = path.resolve(options.path.trim());
     if (!fsSync.existsSync(resolvedPath)) {
-      await fs.mkdir(resolvedPath, { recursive: true });
+      const err: any = new Error(`Project path does not exist: '${options.path}'. Use create_project when a new directory should be created.`);
+      err.code = 'PROJECT_PATH_NOT_FOUND';
+      err.category = 'validation';
+      throw err;
+    }
+    if (!fsSync.statSync(resolvedPath).isDirectory()) {
+      const err: any = new Error(`Project path is not a directory: '${options.path}'.`);
+      err.code = 'PROJECT_PATH_NOT_DIRECTORY';
+      err.category = 'validation';
+      throw err;
     }
 
     for (const p of this.projects.values()) {
       if (p.name.toLowerCase() === options.name.trim().toLowerCase()) {
-        throw new Error(`A project with name '${options.name}' already exists.`);
+        const err: any = new Error(`A project with name '${options.name}' already exists.`);
+        err.code = 'PROJECT_NAME_CONFLICT';
+        err.category = 'conflict';
+        throw err;
       }
       if (path.resolve(p.path).toLowerCase() === resolvedPath.toLowerCase()) {
-        throw new Error(`A project pointing to '${options.path}' is already registered as '${p.name}'.`);
+        const err: any = new Error(`A project pointing to '${options.path}' is already registered as '${p.name}'.`);
+        err.code = 'PROJECT_PATH_CONFLICT';
+        err.category = 'conflict';
+        throw err;
       }
     }
 
@@ -455,6 +478,7 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
         blockedCommands: options.permissions?.blockedCommands,
       },
       createdAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(),
     };
 
     this.projects.set(id, newProject);
@@ -467,6 +491,36 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
     };
     populated.systemPrompt = this.generateSystemPrompt(populated);
     return populated;
+  }
+
+  public async createProject(options: {
+    name: string;
+    path: string;
+    description?: string;
+    permissions?: Partial<ProjectPermissions>;
+  }): Promise<ProjectInfo> {
+    if (!options.path || !options.path.trim()) {
+      const err: any = new Error('Project path is required.');
+      err.code = 'INVALID_PROJECT_PATH';
+      err.category = 'validation';
+      throw err;
+    }
+
+    const resolvedPath = path.resolve(options.path.trim());
+    if (fsSync.existsSync(resolvedPath)) {
+      const err: any = new Error(`Project path already exists: '${options.path}'. Use add_project to register an existing directory.`);
+      err.code = 'PROJECT_PATH_ALREADY_EXISTS';
+      err.category = 'conflict';
+      throw err;
+    }
+
+    await fs.mkdir(resolvedPath, { recursive: true });
+    try {
+      return await this.addProject({ ...options, path: resolvedPath });
+    } catch (err) {
+      await fs.rm(resolvedPath, { recursive: true, force: true }).catch(() => undefined);
+      throw err;
+    }
   }
 
   public async updateProject(
@@ -487,10 +541,43 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
       throw new Error(`Project '${idOrName}' not found.`);
     }
 
-    if (updates.name) target.name = updates.name.trim();
+    if (updates.name) {
+      const nextName = updates.name.trim();
+      const nameConflict = Array.from(this.projects.values()).find(
+        (p) => p.id !== target!.id && p.name.toLowerCase() === nextName.toLowerCase(),
+      );
+      if (nameConflict) {
+        const err: any = new Error(`A project with name '${nextName}' already exists.`);
+        err.code = 'PROJECT_NAME_CONFLICT';
+        err.category = 'conflict';
+        throw err;
+      }
+      target.name = nextName;
+    }
     if (updates.path && updates.path.trim() && updates.path.trim() !== '.') {
-      target.path = path.resolve(updates.path);
-      await fs.mkdir(target.path, { recursive: true });
+      const nextPath = path.resolve(updates.path);
+      if (!fsSync.existsSync(nextPath)) {
+        const err: any = new Error(`Project path does not exist: '${updates.path}'.`);
+        err.code = 'PROJECT_PATH_NOT_FOUND';
+        err.category = 'validation';
+        throw err;
+      }
+      if (!fsSync.statSync(nextPath).isDirectory()) {
+        const err: any = new Error(`Project path is not a directory: '${updates.path}'.`);
+        err.code = 'PROJECT_PATH_NOT_DIRECTORY';
+        err.category = 'validation';
+        throw err;
+      }
+      const pathConflict = Array.from(this.projects.values()).find(
+        (p) => p.id !== target!.id && path.resolve(p.path).toLowerCase() === nextPath.toLowerCase(),
+      );
+      if (pathConflict) {
+        const err: any = new Error(`Project path is already registered as '${pathConflict.name}'.`);
+        err.code = 'PROJECT_PATH_CONFLICT';
+        err.category = 'conflict';
+        throw err;
+      }
+      target.path = nextPath;
     }
     if (updates.description !== undefined) target.description = updates.description;
     if (updates.permissions) {

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "proj_example_api",
+    "name": "example-api",
+    "path": "D:\\projects\\example-api",
+    "description": "Example API workspace",
+    "permissions": {
+      "canRead": true,
+      "canWrite": true,
+      "canRunCommand": true,
+      "canUseSkills": true,
+      "canUseHandoff": true,
+      "allowedCommands": [
+        "npm",
+        "npx",
+        "git"
+      ],
+      "blockedCommands": []
+    },
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "lastUsedAt": "2026-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "proj_example_readonly",
+    "name": "example-readonly",
+    "path": "/workspace/example-readonly",
+    "description": "Example read-only workspace",
+    "permissions": {
+      "canRead": true,
+      "canWrite": false,
+      "canRunCommand": false,
+      "canUseSkills": true,
+      "canUseHandoff": false
+    },
+    "createdAt": "2026-01-01T00:00:00.000Z"
+  }
+]

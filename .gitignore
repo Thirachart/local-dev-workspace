@@ -4,6 +4,7 @@ bin/
 logs/
 .chat-dev/tunnel-client/
 config/auth.json
+config/projects.json
 config/tunnel-auth.json
 config/tunnel-openai.json
 *.log
