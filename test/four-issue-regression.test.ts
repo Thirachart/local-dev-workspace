@@ -9,7 +9,23 @@ import { PatchService } from '../src/services/patchService.js';
 import { ProcessService } from '../src/services/processService.js';
 
 describe('Four issue regression coverage', () => {
-  it('promotes a timed-out foreground command to a trackable background task', async () => {
+  it('terminates a timed-out foreground command by default', async () => {
+    const processService = new ProcessService(process.cwd());
+    const result = await processService.runCommand({
+      command: 'node -e "setTimeout(() => {}, 2000)"',
+      timeoutMs: 50,
+    });
+
+    assert.equal(result.status, 'timed_out');
+    assert.equal(result.timedOut, true);
+    assert.equal(result.promotedToBackground, false);
+    assert.equal(result.processAlive, false);
+    assert.equal(result.terminationSucceeded, true);
+    assert.ok(result.taskId);
+    assert.equal(processService.getTaskStatus(result.taskId!).found, false);
+  });
+
+  it('can explicitly detach a timed-out foreground command as a trackable background task', async () => {
     const processService = new ProcessService(process.cwd());
     let result: Awaited<ReturnType<ProcessService['runCommand']>> | undefined;
 
@@ -17,6 +33,7 @@ describe('Four issue regression coverage', () => {
       result = await processService.runCommand({
         command: 'node -e "setTimeout(() => {}, 2000)"',
         timeoutMs: 50,
+        detachOnTimeout: true,
       });
 
       assert.equal(result.status, 'timed_out');

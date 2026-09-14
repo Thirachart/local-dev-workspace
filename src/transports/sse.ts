@@ -3,6 +3,7 @@ import cors from 'cors';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { execSync } from 'node:child_process';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -259,14 +260,14 @@ export function startSseTransport(
     app.post('/api/ui/shutdown', requireLocalAccess, async (req, res) => {
       res.json({ success: true, message: 'Core MCP Server is shutting down cleanly...' });
       setTimeout(() => {
-        logger.info('Received shutdown request from UI. Exiting process...');
+        console.info('Received shutdown request from UI. Exiting process...');
         process.exit(0);
       }, 300);
     });
     app.post('/api/ui/restart', requireLocalAccess, async (req, res) => {
       res.json({ success: true, message: 'Core MCP Server is restarting...' });
       setTimeout(() => {
-        logger.info('Received restart request from UI. Exiting process for supervisor restart...');
+        console.info('Received restart request from UI. Exiting process for supervisor restart...');
         process.exit(0);
       }, 300);
     });
@@ -1410,7 +1411,7 @@ export function startSseTransport(
       const start = Date.now();
       const sessionId = getSessionId(req);
       try {
-        const { command, cwd, timeout_ms, is_daemon, project } = req.body;
+        const { command, cwd, timeout_ms, is_daemon, detach_on_timeout, project } = req.body;
         const perm = services.projectService.checkPermission('command', cwd, project, sessionId);
         if (!perm.allowed) {
           logger.logAction({
@@ -1428,13 +1429,14 @@ export function startSseTransport(
           cwd,
           timeoutMs: timeout_ms,
           isDaemon: is_daemon,
+          detachOnTimeout: detach_on_timeout,
           projectName: project,
         });
         const projectName = perm.project ? perm.project.name : 'Unknown';
         const projectPermissions = perm.project ? perm.project.permissions : undefined;
         logger.logAction({
           action: 'run_command',
-          params: { command, cwd, is_daemon, project },
+          params: { command, cwd, is_daemon, detach_on_timeout, project },
           status: result.status === 'failed' || result.status === 'timed_out' ? 'error' : 'success',
           durationMs: Date.now() - start,
           resultSummary: `Exit code: ${result.exitCode ?? 'N/A'}, Stdout: ${result.stdout.slice(0, 100).trim() || '(empty)'}`,

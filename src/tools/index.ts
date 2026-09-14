@@ -14,6 +14,7 @@ import { GitWorkflowService } from '../services/gitWorkflowService.js';
 import { DiagnosticParserService } from '../services/diagnosticParserService.js';
 import { TestRunnerService } from '../services/testRunnerService.js';
 import { WorkspaceHealthService } from '../services/workspaceHealthService.js';
+import { ProductivityService } from '../services/productivityService.js';
 import { ContextLedger } from '../context/contextLedger.js';
 import { DeliveryPlanner } from '../context/deliveryPlanner.js';
 import { sha256Content } from '../context/contentFingerprint.js';
@@ -109,6 +110,7 @@ export function registerTools(
   } = services;
 
   const testRunnerService = new TestRunnerService(processService, process.cwd(), projectService);
+  const productivityService = new ProductivityService(fileService, patchService, projectService);
   const workspaceHealthService = new WorkspaceHealthService(
     projectService,
     gitService,
@@ -144,7 +146,7 @@ export function registerTools(
       const startedAt = Date.now();
       const project = args?.project as string | undefined;
       const cwd = args?.cwd as string | undefined;
-      const targetPath = args?.path || args?.targetPath || args?.file_path || args?.source_path;
+      const targetPath = args?.path || args?.targetPath || args?.file_path || args?.target_path || args?.dest_path || args?.source_path;
 
       try {
         if (metadata.capability !== 'none') {
@@ -502,12 +504,15 @@ export function registerTools(
     },
     async ({ project, path, content, mode, expected_before_hash, cwd }) => {
       try {
-        const result = await fileService.writeFile(path, content, {
-          customCwd: cwd,
-          project,
-          mode,
-          expectedBeforeHash: expected_before_hash,
-        });
+        const journaled = await productivityService.journalMutation('write', [path], { project, cwd }, () =>
+          fileService.writeFile(path, content, {
+            customCwd: cwd,
+            project,
+            mode,
+            expectedBeforeHash: expected_before_hash,
+          }),
+        );
+        const result = { ...journaled.result, operationId: journaled.mutation.operationId, undoAvailable: journaled.mutation.undoable };
         return {
           content: [
             {
@@ -540,12 +545,15 @@ export function registerTools(
     },
     async ({ project, path, target_content, replacement_content, allow_multiple, expected_before_hash, cwd }) => {
       try {
-        const result = await fileService.editFile(path, target_content, replacement_content, {
-          allowMultiple: allow_multiple,
-          expectedBeforeHash: expected_before_hash,
-          customCwd: cwd,
-          project,
-        });
+        const journaled = await productivityService.journalMutation('edit', [path], { project, cwd }, () =>
+          fileService.editFile(path, target_content, replacement_content, {
+            allowMultiple: allow_multiple,
+            expectedBeforeHash: expected_before_hash,
+            customCwd: cwd,
+            project,
+          }),
+        );
+        const result = { ...journaled.result, operationId: journaled.mutation.operationId, undoAvailable: journaled.mutation.undoable };
         return {
           content: [
             {
@@ -615,7 +623,10 @@ export function registerTools(
         if (!perm.allowed) {
           return { isError: true, content: [{ type: 'text', text: perm.reason || 'Permission denied' }] };
         }
-        const result = await fileService.deleteFile(path, { force, customCwd: cwd, project });
+        const journaled = await productivityService.journalMutation('delete', [path], { project, cwd }, () =>
+          fileService.deleteFile(path, { force, customCwd: cwd, project }),
+        );
+        const result = { ...journaled.result, operationId: journaled.mutation.operationId, undoAvailable: journaled.mutation.undoable };
         return {
           content: [
             {
@@ -714,14 +725,16 @@ export function registerTools(
       cwd: z.string().optional().describe('Working directory to execute command in'),
       timeout_ms: z.number().int().positive().optional().describe('Timeout in milliseconds for synchronous execution (default 60000)'),
       is_daemon: z.boolean().optional().describe('Set to true for long-running processes (dev servers, watchers) to run in the background'),
+      detach_on_timeout: z.boolean().optional().describe('For synchronous commands only: keep the process running after timeout and return a task ID. Defaults to false, so timed-out foreground commands are terminated.'),
     },
-    async ({ project, command, cwd, timeout_ms, is_daemon }) => {
+    async ({ project, command, cwd, timeout_ms, is_daemon, detach_on_timeout }) => {
       try {
         const result = await processService.runCommand({
           command,
           cwd,
           timeoutMs: timeout_ms,
           isDaemon: is_daemon,
+          detachOnTimeout: detach_on_timeout,
           projectName: project,
         });
         return {
@@ -1090,9 +1103,17 @@ export function registerTools(
             allowMultiple: c.allowMultiple,
             operations: c.operations,
           }));
-          result = await patchService.applyStructuredPatch(normalizedChunks, { customCwd: cwd, project });
+          const patchPaths = productivityService.extractPatchPaths({ chunks: normalizedChunks });
+          const journaled = await productivityService.journalMutation('patch', patchPaths, { project, cwd }, () =>
+            patchService.applyStructuredPatch(normalizedChunks, { customCwd: cwd, project }),
+          );
+          result = { ...journaled.result, operationId: journaled.mutation.operationId, undoAvailable: journaled.mutation.undoable };
         } else if (diffInput && typeof diffInput === 'string' && diffInput.trim()) {
-          result = await patchService.applyUnifiedDiff(diffInput, { customCwd: cwd, project });
+          const patchPaths = productivityService.extractPatchPaths({ diff: diffInput });
+          const journaled = await productivityService.journalMutation('patch', patchPaths, { project, cwd }, () =>
+            patchService.applyUnifiedDiff(diffInput, { customCwd: cwd, project }),
+          );
+          result = { ...journaled.result, operationId: journaled.mutation.operationId, undoAvailable: journaled.mutation.undoable };
         } else {
           return {
             isError: true,
@@ -1470,7 +1491,10 @@ export function registerTools(
         if (!perm.allowed) {
           return { isError: true, content: [{ type: 'text', text: perm.reason || 'Permission denied' }] };
         }
-        const result = await fileService.moveFile(source_path, dest_path, { overwrite, customCwd: cwd, project });
+        const journaled = await productivityService.journalMutation('move', [source_path, dest_path], { project, cwd }, () =>
+          fileService.moveFile(source_path, dest_path, { overwrite, customCwd: cwd, project }),
+        );
+        const result = { ...journaled.result, operationId: journaled.mutation.operationId, undoAvailable: journaled.mutation.undoable };
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         };
@@ -1712,6 +1736,212 @@ export function registerTools(
         return { isError: true, content: [{ type: 'text', text: `Git push error: ${err.message}` }] };
       }
     }
+  );
+
+  // --- REVERSIBILITY & PRODUCTIVITY (P2) ---
+  registerTool(
+    'undo_operation',
+    'Undo a recorded file mutation only when every current target still matches the mutation after-state (CAS-safe undo).',
+    {
+      project: z.string().describe('Required registered project name or id'),
+      operation_id: z.string().describe('Mutation operation ID returned by write/edit/delete/move/apply_patch/changeset/copy/sync/config patch'),
+    },
+    async ({ project, operation_id }) => {
+      const result = await productivityService.undoOperation(project, operation_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  registerTool(
+    'get_mutation',
+    'Read persisted mutation-journal metadata without returning backed-up source content.',
+    {
+      project: z.string().describe('Required registered project name or id'),
+      operation_id: z.string().describe('Mutation operation ID'),
+    },
+    async ({ project, operation_id }) => {
+      const result = await productivityService.getMutation(project, operation_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  registerTool(
+    'file_changeset',
+    'Apply a file-only changeset (write/edit/delete/move/structured patch) with one persisted before-state and automatic rollback if any operation fails.',
+    {
+      project: z.string().describe('Required registered project name or id'),
+      cwd: z.string().optional().describe('Working directory relative to project root'),
+      operations: z.array(z.any()).min(1).describe('Ordered file-only operations. Supported types: write, edit, delete, move, patch.'),
+    },
+    async ({ project, cwd, operations }) => {
+      const result = await productivityService.applyChangeset({ project, cwd, operations });
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  const copyFileSchema = {
+    project: z.string().describe('Required registered project name or id'),
+    source_project: z.string().describe('Source registered project name or id'),
+    source_path: z.string().describe('Source file path within source_project'),
+    target_path: z.string().describe('Target file path within target project'),
+    source_cwd: z.string().optional().describe('Optional source-project working directory'),
+    target_cwd: z.string().optional().describe('Optional target-project working directory'),
+    expected_source_hash: z.string().optional().describe('Optional expected SHA256 of source before copy'),
+  };
+  const copyFileHandler = (syncOnly: boolean): ((args: any) => Promise<any>) => async ({
+    project,
+    source_project,
+    source_path,
+    target_path,
+    source_cwd,
+    target_cwd,
+    expected_source_hash,
+  }: any) => {
+    const sourcePerm = projectService.checkPermission('read', source_cwd, source_project);
+    if (!sourcePerm.allowed) return { isError: true, content: [{ type: 'text', text: sourcePerm.reason || 'Source read permission denied' }] };
+    const targetPerm = projectService.checkPermission('write', target_cwd, project);
+    if (!targetPerm.allowed) return { isError: true, content: [{ type: 'text', text: targetPerm.reason || 'Target write permission denied' }] };
+    const result = await productivityService.copyFile({
+      sourceProject: source_project,
+      sourcePath: source_path,
+      targetProject: project,
+      targetPath: target_path,
+      sourceCwd: source_cwd,
+      targetCwd: target_cwd,
+      expectedSourceHash: expected_source_hash,
+      syncOnly,
+    });
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  };
+  registerTool(
+    'copy_file',
+    'Copy one regular file across explicit projects with optional source-hash verification and CAS-safe undo.',
+    copyFileSchema,
+    copyFileHandler(false),
+  );
+  registerTool(
+    'sync_file',
+    'Synchronize one regular file across explicit projects only when content differs, with optional source-hash verification and CAS-safe undo.',
+    copyFileSchema,
+    copyFileHandler(true),
+  );
+
+  const configPatchSchema = {
+    project: z.string().describe('Required registered project name or id'),
+    path: z.string().describe('JSON or YAML file path'),
+    operations: z.array(z.object({
+      op: z.enum(['set', 'remove']),
+      path: z.string().describe('JSON Pointer path such as /server/port'),
+      value: z.any().optional(),
+    })).min(1),
+    expected_before_hash: z.string().optional().describe('Optional SHA256 CAS guard'),
+    cwd: z.string().optional().describe('Working directory relative to project root'),
+  };
+  registerTool(
+    'patch_json',
+    'Patch JSON structurally with JSON Pointer set/remove operations and CAS-safe undo.',
+    configPatchSchema,
+    async ({ project, path, operations, expected_before_hash, cwd }) => {
+      const result = await productivityService.patchConfig({ format: 'json', project, path, operations, expectedBeforeHash: expected_before_hash, cwd });
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+  registerTool(
+    'patch_yaml',
+    'Patch YAML structurally with JSON Pointer set/remove operations and CAS-safe undo.',
+    configPatchSchema,
+    async ({ project, path, operations, expected_before_hash, cwd }) => {
+      const result = await productivityService.patchConfig({ format: 'yaml', project, path, operations, expectedBeforeHash: expected_before_hash, cwd });
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  registerTool(
+    'batch_file_ops',
+    'Batch non-mutating file reads, SHA256 hashes, and byte-content comparisons in one call.',
+    {
+      project: z.string().describe('Required registered project name or id'),
+      cwd: z.string().optional().describe('Working directory relative to project root'),
+      operations: z.array(z.any()).min(1).max(100).describe('Operations of type hash, read, or compare'),
+    },
+    async ({ project, cwd, operations }) => {
+      const result = await productivityService.batchRead({ project, cwd, operations });
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  registerTool(
+    'git_stage',
+    'Stage explicit repository-relative files without shell interpolation.',
+    {
+      project: z.string().describe('Required registered project name or id'),
+      files: z.array(z.string()).min(1).describe('Repository-relative files to stage'),
+      cwd: z.string().optional().describe('Repository working directory'),
+    },
+    async ({ project, files, cwd }) => ({ content: [{ type: 'text', text: JSON.stringify(await gitService.stage(files, { customCwd: cwd, project }), null, 2) }] }),
+  );
+
+  registerTool(
+    'git_unstage',
+    'Unstage explicit repository-relative files without changing working-tree content.',
+    {
+      project: z.string().describe('Required registered project name or id'),
+      files: z.array(z.string()).min(1).describe('Repository-relative files to unstage'),
+      cwd: z.string().optional().describe('Repository working directory'),
+    },
+    async ({ project, files, cwd }) => ({ content: [{ type: 'text', text: JSON.stringify(await gitService.unstage(files, { customCwd: cwd, project }), null, 2) }] }),
+  );
+
+  registerTool(
+    'git_show',
+    'Read a repository-relative file at a Git revision without checking it out.',
+    {
+      project: z.string().describe('Required registered project name or id'),
+      revision: z.string().describe('Git revision such as HEAD, main, or a commit hash'),
+      path: z.string().describe('Repository-relative file path'),
+      cwd: z.string().optional().describe('Repository working directory'),
+      max_chars: z.number().int().positive().max(500000).optional().describe('Maximum content characters returned (default 100000)'),
+    },
+    async ({ project, revision, path, cwd, max_chars }) => {
+      const result = await gitService.showFile(revision, path, { customCwd: cwd, project });
+      const limit = max_chars || 100000;
+      const truncated = result.content.length > limit;
+      return { content: [{ type: 'text', text: JSON.stringify({ ...result, content: result.content.slice(0, limit), truncated }, null, 2) }] };
+    },
+  );
+
+  // --- CLEANUP & COMPATIBILITY (P3) ---
+  registerTool(
+    'project_registry_report',
+    'Report missing, duplicate-path, and stale project-registry entries without exposing absolute local paths.',
+    {
+      stale_after_days: z.number().int().positive().max(3650).optional().describe('Days since last use before an entry is considered stale (default 90)'),
+    },
+    async ({ stale_after_days }) => {
+      const days = stale_after_days || 90;
+      const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+      const projects = projectService.listProjects('global', false, { compact: true }).projects;
+      const byPath = new Map<string, typeof projects>();
+      for (const project of projects) {
+        const key = project.path.toLowerCase().replace(/\\/g, '/');
+        const group = byPath.get(key) || [];
+        group.push(project);
+        byPath.set(key, group);
+      }
+      const summarize = (project: (typeof projects)[number]) => ({
+        id: project.id,
+        name: project.name,
+        pathExists: project.pathExists,
+        lastUsedAt: project.lastUsedAt,
+      });
+      const missing = projects.filter((project) => project.pathExists === false).map(summarize);
+      const stale = projects.filter((project) => {
+        const timestamp = Date.parse(project.lastUsedAt || project.updatedAt || project.createdAt);
+        return Number.isFinite(timestamp) && timestamp < cutoff;
+      }).map(summarize);
+      const duplicatePaths = Array.from(byPath.values()).filter((group) => group.length > 1).map((group) => group.map(summarize));
+      return { content: [{ type: 'text', text: JSON.stringify({ totalCount: projects.length, staleAfterDays: days, missing, stale, duplicatePaths }, null, 2) }] };
+    },
   );
 }
 

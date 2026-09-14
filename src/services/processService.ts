@@ -24,6 +24,7 @@ export interface CommandResult {
   timedOut?: boolean;
   promotedToBackground?: boolean;
   processAlive?: boolean;
+  terminationSucceeded?: boolean;
 }
 
 export interface DangerousPattern {
@@ -145,6 +146,7 @@ export class ProcessService {
     cwd?: string;
     timeoutMs?: number;
     isDaemon?: boolean;
+    detachOnTimeout?: boolean;
     projectName?: string;
   }): Promise<CommandResult> {
     // 🛡️ Step 0: Enforce Working Directory Jail & Project-level Command Execution Permission
@@ -231,7 +233,7 @@ export class ProcessService {
 
       // A timed-out foreground command is intentionally retained so the caller
       // can observe the promoted background process through task_status.
-      if (options.isDaemon || taskInfo.timedOut) {
+      if (options.isDaemon || (taskInfo.timedOut && options.detachOnTimeout)) {
         const retentionTimer = setTimeout(() => {
           const current = this.tasks.get(taskId);
           if (current?.info.status !== 'running') {
@@ -293,25 +295,50 @@ export class ProcessService {
 
       timeoutHandle = setTimeout(() => {
         if (settled) return;
-        // Do not silently lose a still-running test/build. Return a structured
-        // timeout and retain the process as a trackable background task.
         taskInfo.timedOut = true;
         stderrData += `\n[Command timed out after ${timeout}ms]`;
         settled = true;
         if (timeoutHandle) clearTimeout(timeoutHandle);
-        resolve({
-          taskId,
-          isDaemon: false,
-          stdout: this.sanitizeOutput(stdoutData, projectRoot),
-          stderr: this.sanitizeOutput(stderrData, projectRoot),
-          exitCode: null,
-          status: 'timed_out',
-          durationMs: Date.now() - startTime,
-          cwd: relCwd,
-          timedOut: true,
-          promotedToBackground: true,
-          processAlive: child.exitCode === null,
-        });
+
+        if (options.detachOnTimeout) {
+          resolve({
+            taskId,
+            isDaemon: false,
+            stdout: this.sanitizeOutput(stdoutData, projectRoot),
+            stderr: this.sanitizeOutput(stderrData, projectRoot),
+            exitCode: null,
+            status: 'timed_out',
+            durationMs: Date.now() - startTime,
+            cwd: relCwd,
+            timedOut: true,
+            promotedToBackground: true,
+            processAlive: child.exitCode === null && child.signalCode === null,
+          });
+          return;
+        }
+
+        void (async () => {
+          const termination = await this.killTask(taskId, options.projectName);
+
+          taskInfo.endTime = taskInfo.endTime || Date.now();
+          taskInfo.durationMs = taskInfo.durationMs ?? Math.max(0, taskInfo.endTime - taskInfo.startTime);
+          const processAlive = child.exitCode === null && child.signalCode === null;
+          this.tasks.delete(taskId);
+          resolve({
+            taskId,
+            isDaemon: false,
+            stdout: this.sanitizeOutput(stdoutData, projectRoot),
+            stderr: this.sanitizeOutput(stderrData, projectRoot),
+            exitCode: child.exitCode,
+            status: 'timed_out',
+            durationMs: taskInfo.durationMs,
+            cwd: relCwd,
+            timedOut: true,
+            promotedToBackground: false,
+            processAlive,
+            terminationSucceeded: termination.success && !processAlive,
+          });
+        })();
       }, timeout);
     });
   }

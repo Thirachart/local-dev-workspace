@@ -274,6 +274,46 @@ export class GitService {
     }
   }
 
+  public async stage(files: string[], options?: { customCwd?: string; project?: string }): Promise<{ success: boolean; files: string[] }> {
+    const cwd = this.resolveCwd(options?.customCwd, options?.project);
+    if (!files.length) throw new Error('At least one file is required.');
+    await execFileAsync('git', ['add', '--', ...files], { cwd });
+    return { success: true, files };
+  }
+
+  public async unstage(files: string[], options?: { customCwd?: string; project?: string }): Promise<{ success: boolean; files: string[] }> {
+    const cwd = this.resolveCwd(options?.customCwd, options?.project);
+    if (!files.length) throw new Error('At least one file is required.');
+    try {
+      await execFileAsync('git', ['restore', '--staged', '--', ...files], { cwd });
+    } catch {
+      await execFileAsync('git', ['reset', 'HEAD', '--', ...files], { cwd });
+    }
+    return { success: true, files };
+  }
+
+  public async showFile(
+    revision: string,
+    filePath: string,
+    options?: { customCwd?: string; project?: string },
+  ): Promise<{ revision: string; path: string; content: string }> {
+    const cwd = this.resolveCwd(options?.customCwd, options?.project);
+    if (!revision.trim()) throw new Error('Revision is required.');
+    if (!filePath.trim()) throw new Error('File path is required.');
+    const normalized = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+    if (normalized.startsWith('../') || path.isAbsolute(filePath)) {
+      const err: any = new Error('[GIT_PATH_OUTSIDE_PROJECT] git_show only accepts a repository-relative path.');
+      err.code = 'GIT_PATH_OUTSIDE_PROJECT';
+      err.category = 'validation';
+      throw err;
+    }
+    const { stdout } = await execFileAsync('git', ['show', `${revision}:${normalized}`], {
+      cwd,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    return { revision, path: normalized, content: stdout };
+  }
+
   public async commit(options: {
     message: string;
     files?: string[];

@@ -497,7 +497,7 @@ export class OpenAiTunnelService {
       await new Promise((r) => setTimeout(r, 500));
       if (this.child !== child || !this.isRunning) break;
       await this.refreshReadiness(child);
-      if (this.readiness === 'ready') break;
+      if (this.getStatus().readiness === 'ready') break;
     }
 
     if (this.child === child && this.isRunning && this.getStatus().readiness !== 'ready') {
