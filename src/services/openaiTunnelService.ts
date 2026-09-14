@@ -101,6 +101,8 @@ export class OpenAiTunnelService {
   private controlPlanePollReady: boolean | null = null;
   private readinessError: string | null = null;
   private readinessRunId = 0;
+  private isStopping = false;
+  private outputBuffer: string[] = [];
   private readonly baseDir: string;
   private readonly binDir: string;
   private readonly binaryPath: string;
@@ -462,6 +464,8 @@ export class OpenAiTunnelService {
 
     this.child = child;
     this.isRunning = true;
+    this.isStopping = false;
+    this.outputBuffer = [];
     this.runningProfileId = profile.id;
     this.runningMode = mode;
     this.readinessRunId += 1;
@@ -469,24 +473,38 @@ export class OpenAiTunnelService {
     this.controlPlanePollReady = null;
     this.readinessError = null;
 
-    child.stdout?.on('data', (chunk) => {
-      const msg = chunk.toString();
-      if (isFatalOpenAiTunnelLog(msg)) this.lastError = msg.trim();
-    });
-    child.stderr?.on('data', (chunk) => {
-      const msg = chunk.toString();
-      if (isFatalOpenAiTunnelLog(msg)) this.lastError = msg.trim();
-    });
+    const recordOutput = (chunk: any) => {
+      const text = chunk?.toString() || '';
+      for (const line of text.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        this.outputBuffer.push(trimmed);
+        if (this.outputBuffer.length > 50) this.outputBuffer.shift();
+        if (isFatalOpenAiTunnelLog(trimmed)) {
+          this.lastError = trimmed;
+        }
+      }
+    };
+
+    child.stdout?.on('data', recordOutput);
+    child.stderr?.on('data', recordOutput);
     child.on('error', (error) => {
       if (this.child === child) {
-        this.lastError = error.message;
+        if (!this.isStopping) {
+          this.lastError = error.message;
+        }
         this.clearRunningChild(child);
       }
     });
     child.on('exit', (code) => {
       if (this.child === child) {
-        if (code !== 0 && code !== null) {
-          this.lastError = `tunnel-client process exited with code ${code}`;
+        if (this.isStopping) {
+          this.lastError = null;
+        } else if (code !== 0 && code !== null) {
+          const failureLine = [...this.outputBuffer].reverse().find(
+            (l) => isFatalOpenAiTunnelLog(l) || /\b(error|failed|fatal|panic|invalid)\b/i.test(l)
+          );
+          this.lastError = failureLine || `tunnel-client process exited with code ${code}`;
         }
         this.clearRunningChild(child);
       }
@@ -507,16 +525,19 @@ export class OpenAiTunnelService {
   }
 
   public async stopTunnel(): Promise<void> {
+    this.isStopping = true;
     const child = this.child;
     if (!child) {
       this.isRunning = false;
       this.runningProfileId = null;
       this.resetReadiness();
+      this.isStopping = false;
       return;
     }
 
     if (child.exitCode !== null) {
       this.clearRunningChild(child);
+      this.isStopping = false;
       return;
     }
 
@@ -539,6 +560,7 @@ export class OpenAiTunnelService {
         settled = true;
         cleanup();
         this.clearRunningChild(child);
+        this.isStopping = false;
         console.log('🔴 [OpenAI Tunnel] Stopped tunnel-client daemon');
         resolve();
       };
