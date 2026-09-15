@@ -4,6 +4,7 @@ export interface ServerConfig {
   port: number;
   host: string;
   ngrokToken?: string;
+  toolProfile?: string;
 }
 
 export interface TaskInfo {

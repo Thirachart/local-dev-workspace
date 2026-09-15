@@ -31,3 +31,4 @@ import './context-delivery-ledger.test.js';
 import './context-delivery-tools.test.js';
 import './four-issue-regression.test.js';
 import './openapi-output-schema.test.js';
+import './core-profile-registration.test.js';

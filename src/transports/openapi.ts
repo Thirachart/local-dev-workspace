@@ -26,6 +26,34 @@ export const TOOL_CATEGORIES = [
   'Agent & Extension',
 ] as const;
 
+export const CORE_PROFILE_KEYS = [
+  '/api/open_project',
+  '/api/get_project_snapshot',
+  '/api/search_context',
+  '/api/read_symbol',
+  '/api/read_file',
+  '/api/write_file',
+  '/api/apply_patch',
+  '/api/project_diagnostics',
+  '/api/run_command',
+  '/api/git_status',
+  '/api/git_commit',
+  '/api/git_branch',
+  '/api/git_push',
+  '/api/verify_changes',
+  '/api/commit_and_push',
+  '/api/workspace_health',
+  '/api/list_skills',
+  '/api/read_skill',
+] as const;
+
+export const CORE_TOOL_NAMES: readonly string[] = CORE_PROFILE_KEYS.map((k) => k.replace('/api/', ''));
+
+export function getProfileToolNames(profile: OpenApiProfile = 'core', customKeys?: string[]): string[] {
+  const spec = getOpenApiSpec('http://placeholder', profile, customKeys);
+  return Object.keys(spec.paths).map((p) => p.replace('/api/', ''));
+}
+
 /**
  * MCP v2 compatibility gateway contract.
  * Existing OpenAPI clients can invoke the same MCP registry without creating
@@ -999,26 +1027,7 @@ export function getOpenApiSpec(hostUrl: string, profile: OpenApiProfile = 'core'
     }
   }
 
-  const coreKeys = [
-    '/api/open_project',
-    '/api/get_project_snapshot',
-    '/api/search_context',
-    '/api/read_symbol',
-    '/api/read_file',
-    '/api/write_file',
-    '/api/apply_patch',
-    '/api/project_diagnostics',
-    '/api/run_command',
-    '/api/git_status',
-    '/api/git_commit',
-    '/api/git_branch',
-    '/api/git_push',
-    '/api/verify_changes',
-    '/api/commit_and_push',
-    '/api/workspace_health',
-    '/api/list_skills',
-    '/api/read_skill',
-  ];
+  const coreKeys = CORE_PROFILE_KEYS;
 
   const agentKeys = [
     ...coreKeys,
@@ -1037,7 +1046,7 @@ export function getOpenApiSpec(hostUrl: string, profile: OpenApiProfile = 'core'
     '/api/write_handoff',
   ];
 
-  let selectedKeys: string[];
+  let selectedKeys: readonly string[];
   if (profile === 'custom' && customKeys && customKeys.length > 0) {
     selectedKeys = customKeys;
   } else if (profile === 'full') {

@@ -53,6 +53,7 @@ function parseArgs(): ServerConfig & { resetKey?: boolean } {
   let host = process.env.HOST || '0.0.0.0';
   let ngrokToken = process.env.NGROK_AUTHTOKEN;
   let resetKey = false;
+  let toolProfile: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -73,6 +74,10 @@ function parseArgs(): ServerConfig & { resetKey?: boolean } {
       }
     } else if (arg === '--reset-key') {
       resetKey = true;
+    } else if (arg === '--profile') {
+      if (i + 1 < args.length) {
+        toolProfile = args[++i];
+      }
     } else if (arg === '--cwd' || arg === '-d') {
       if (i + 1 < args.length) {
         cwd = path.resolve(args[++i]);
@@ -87,6 +92,7 @@ Usage:
 Options:
   --sse                     Run in HTTP / Server-Sent Events mode (for ChatGPT, Web Clients)
   --ngrok [token]           Run HTTP mode and provide an Ngrok token; saved tunnel settings still choose what auto-starts
+  --profile <name>          Tool profile to register (core | agent | extension | full, default: core in SSE, full in stdio)
   --reset-key               Rotate and generate a new high-entropy Bearer API Key
   --port, -p <num>          Port for SSE server (default: 4100)
   --host <host>             Host for SSE server (default: 0.0.0.0)
@@ -97,7 +103,9 @@ Options:
     }
   }
 
-  return { cwd, isSse, port, host, ngrokToken, resetKey };
+  const resolvedProfile = process.env.WINSPACE_TOOL_PROFILE || process.env.TOOL_PROFILE || toolProfile || (isSse ? 'core' : 'full');
+
+  return { cwd, isSse, port, host, ngrokToken, resetKey, toolProfile: resolvedProfile };
 }
 
 async function main() {
@@ -148,6 +156,8 @@ async function main() {
     gitWorkflowService,
     diagnosticParserService,
     logger,
+  }, {
+    toolProfile: config.toolProfile,
   });
 
   if (authService.isFirstRun) {

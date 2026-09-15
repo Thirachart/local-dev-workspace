@@ -26,6 +26,7 @@ import { SnapshotManager } from '../core/snapshotManager.js';
 import { AuditLogger } from '../core/auditLogger.js';
 import { Logger } from '../utils/logger.js';
 import { safeGitCommit } from '../git-intel/commitService.js';
+import { CORE_TOOL_NAMES, getProfileToolNames, OpenApiProfile } from '../transports/openapi.js';
 
 type ToolExtra = { sessionId?: string } | undefined;
 
@@ -90,6 +91,10 @@ export function registerTools(
     deliveryScopeResolver?: DeliveryScopeResolver;
     contextLedger?: ContextLedger;
     logger?: Logger;
+  },
+  options?: {
+    toolProfile?: string;
+    allowedToolNames?: string[];
   }
 ) {
   const {
@@ -109,6 +114,16 @@ export function registerTools(
     contextLedger = new ContextLedger(),
     logger = new Logger(process.cwd()),
   } = services;
+
+  // Resolve tool profile filter
+  const envProfile = process.env.WINSPACE_TOOL_PROFILE || process.env.TOOL_PROFILE;
+  const targetProfile = options?.toolProfile || envProfile;
+  let allowedTools: Set<string> | null = null;
+  if (options?.allowedToolNames && options.allowedToolNames.length > 0) {
+    allowedTools = new Set(options.allowedToolNames);
+  } else if (targetProfile && targetProfile !== 'full') {
+    allowedTools = new Set(getProfileToolNames(targetProfile as OpenApiProfile));
+  }
 
   const testRunnerService = new TestRunnerService(processService, process.cwd(), projectService);
   const productivityService = new ProductivityService(fileService, patchService, projectService);
@@ -132,6 +147,11 @@ export function registerTools(
     schema: Record<string, any>,
     handler: (args: any, ...rest: any[]) => Promise<any>
   ) => {
+    // If profile filtering is active and tool is not allowed, skip registration
+    if (allowedTools && !allowedTools.has(name)) {
+      return;
+    }
+
     const metadata = getPublicToolMetadata(name);
     const effectiveSchema = metadata.snapshotPolicy === 'none'
       ? schema
