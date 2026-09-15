@@ -31,6 +31,7 @@ export class FileService {
   private projectService?: ProjectService;
   private baseDir: string;
   private atomicWriter = new AtomicWriter();
+  private readCache = new Map<string, { sha256: string; mtimeMs: number }>();
 
   constructor(baseDir: string = process.cwd(), projectService?: ProjectService) {
     this.baseDir = path.resolve(baseDir);
@@ -121,10 +122,35 @@ export class FileService {
 
   public async readFile(
     targetPath: string,
-    options?: { startLine?: number; endLine?: number; customCwd?: string; project?: string; allowSensitive?: boolean }
-  ): Promise<{ content: string; totalLines: number; startLine: number; endLine: number; resolvedPath: string }> {
+    options?: {
+      startLine?: number;
+      endLine?: number;
+      customCwd?: string;
+      project?: string;
+      allowSensitive?: boolean;
+      knownSha256?: string;
+      sessionId?: string;
+    }
+  ): Promise<{
+    content: string;
+    totalLines: number;
+    startLine: number;
+    endLine: number;
+    resolvedPath: string;
+    sha256: string;
+    status: 'clean' | 'unchanged';
+  }> {
     const { fullPath, relPath } = this.validateAccess(targetPath, 'read', options);
     const rawContent = await fs.readFile(fullPath, 'utf-8');
+    const sha256 = crypto.createHash('sha256').update(rawContent, 'utf-8').digest('hex');
+
+    const clientKnown = options?.knownSha256?.trim().toLowerCase();
+    const cacheKey = `${options?.sessionId || 'global'}:${fullPath}`;
+    const cached = this.readCache.get(cacheKey);
+    const isUnchanged = (clientKnown && clientKnown === sha256.toLowerCase()) || (cached && cached.sha256 === sha256 && !!options?.sessionId);
+
+    this.readCache.set(cacheKey, { sha256, mtimeMs: Date.now() });
+
     const isCrlf = rawContent.includes('\r\n');
     const lines = rawContent.split(/\r?\n/);
     const totalLines = lines.length;
@@ -148,7 +174,9 @@ export class FileService {
       totalLines,
       startLine: start,
       endLine: end,
-      resolvedPath: relPath, // Return sanitized relative path
+      resolvedPath: relPath,
+      sha256,
+      status: isUnchanged ? 'unchanged' : 'clean',
     };
   }
 

@@ -25,6 +25,7 @@ import { GitWorkflowService } from '../services/gitWorkflowService.js';
 import { DiagnosticParserService } from '../services/diagnosticParserService.js';
 import { TestRunnerService } from '../services/testRunnerService.js';
 import { WorkspaceHealthService } from '../services/workspaceHealthService.js';
+import { WorkflowCompoundService } from '../services/workflowCompoundService.js';
 import { Logger } from '../utils/logger.js';
 
 export function getOpenAiTunnelStartRequest(body: unknown): { profileId?: string } {
@@ -1817,12 +1818,45 @@ export function startSseTransport(
 
     const patchService = services.patchService || new PatchService(process.cwd(), services.projectService);
     const diagnosticService = services.diagnosticService || new DiagnosticService(services.processService, process.cwd(), services.projectService);
+    const workflowCompoundService = new WorkflowCompoundService(diagnosticService, services.gitService, services.projectService, services.processService);
+
+    app.post('/api/open_project', async (req, res) => {
+      const start = Date.now();
+      const sessionId = getSessionId(req);
+      try {
+        const { project } = req.body || {};
+        if (!project) {
+          return res.status(400).json({ error: 'project parameter is required' });
+        }
+        const projectInfo = await services.projectService.openProject(project, sessionId);
+        logger.logAction({
+          action: 'open_project',
+          params: { project },
+          status: 'success',
+          durationMs: Date.now() - start,
+          resultSummary: `Bound active project to ${projectInfo.name} for session ${sessionId}`,
+        });
+        res.json({
+          success: true,
+          project: services.projectService.sanitizeProjectForClient(projectInfo),
+        });
+      } catch (err: any) {
+        logger.logAction({
+          action: 'open_project',
+          params: req.body || {},
+          status: 'error',
+          durationMs: Date.now() - start,
+          error: err.message,
+        });
+        res.status(500).json({ error: err.message });
+      }
+    });
 
     app.post('/api/apply_patch', async (req, res) => {
       const start = Date.now();
       const sessionId = getSessionId(req);
       try {
-        const { chunks, diff, cwd, project } = req.body || {};
+        const { chunks, diff, cwd, project, edits, create, patch, files } = req.body || {};
         const perm = services.projectService.checkPermission('write', cwd, project, sessionId);
         if (!perm.allowed) {
           logger.logAction({
@@ -1835,22 +1869,62 @@ export function startSseTransport(
           return res.status(403).json({ error: perm.reason || 'Permission denied' });
         }
 
-        let result;
-        if (chunks && chunks.length > 0) {
-          result = await patchService.applyStructuredPatch(chunks, { customCwd: cwd, project });
-        } else if (diff) {
-          result = await patchService.applyUnifiedDiff(diff, { customCwd: cwd, project });
+        const createdFiles: string[] = [];
+        if (create && Array.isArray(create) && create.length > 0) {
+          for (const item of create) {
+            await services.fileService.writeFile(item.path, item.content, { customCwd: cwd, project, mode: 'force' });
+            createdFiles.push(item.path);
+          }
+        }
+
+        let chunksInput = chunks || files;
+        if (edits && Array.isArray(edits) && edits.length > 0) {
+          chunksInput = edits.map((e: any) => ({
+            filePath: e.path,
+            targetContent: e.find,
+            replacementContent: e.replace,
+            allowMultiple: e.allowMultiple,
+          }));
+        }
+
+        const diffInput = diff || patch;
+
+        let result: any;
+        if (chunksInput && chunksInput.length > 0) {
+          const normalizedChunks = chunksInput.map((c: any) => ({
+            filePath: c.filePath || c.path,
+            targetContent: c.targetContent,
+            replacementContent: c.replacementContent,
+            allowMultiple: c.allowMultiple,
+            operations: c.operations,
+          }));
+          result = await patchService.applyStructuredPatch(normalizedChunks, { customCwd: cwd, project });
+          if (createdFiles.length > 0) {
+            result.createdFiles = createdFiles;
+          }
+        } else if (diffInput) {
+          result = await patchService.applyUnifiedDiff(diffInput, { customCwd: cwd, project });
+          if (createdFiles.length > 0) {
+            result.createdFiles = createdFiles;
+          }
+        } else if (createdFiles.length > 0) {
+          result = {
+            success: true,
+            appliedCount: createdFiles.length,
+            filesModified: [],
+            createdFiles,
+          };
         } else {
-          return res.status(400).json({ error: 'Must provide either chunks or diff in request body.' });
+          return res.status(400).json({ error: 'Must provide either edits, create, chunks or diff in request body.' });
         }
 
         const projectName = perm.project ? perm.project.name : 'Unknown';
         logger.logAction({
           action: 'apply_patch',
-          params: { chunksCount: chunks?.length, diffLength: diff?.length, cwd, project },
+          params: { chunksCount: chunksInput?.length, diffLength: diffInput?.length, createdCount: createdFiles.length, cwd, project },
           status: 'success',
           durationMs: Date.now() - start,
-          resultSummary: `Applied patch across ${result.filesModified.length} file(s) (Project: ${projectName})`,
+          resultSummary: `Applied patch across ${result.filesModified?.length || 0} file(s), created ${createdFiles.length} file(s) (Project: ${projectName})`,
         });
         res.json(result);
       } catch (err: any) {
@@ -1863,6 +1937,84 @@ export function startSseTransport(
         });
         const patchError = serializePatchError(err);
         res.status(patchError ? 400 : 500).json(patchError || { error: err.message });
+      }
+    });
+
+    app.post('/api/verify_changes', async (req, res) => {
+      const start = Date.now();
+      const sessionId = getSessionId(req);
+      try {
+        const { project, cwd, tasks, testFilter } = req.body || {};
+        const perm = services.projectService.checkPermission('command', cwd, project, sessionId);
+        if (!perm.allowed) {
+          return res.status(403).json({ error: perm.reason || 'Permission denied' });
+        }
+        const result = await workflowCompoundService.verifyChanges({
+          project,
+          cwd,
+          tasks,
+          testFilter,
+          sessionId,
+        });
+        logger.logAction({
+          action: 'verify_changes',
+          params: { project, tasks, testFilter },
+          status: result.status === 'FAIL' ? 'error' : 'success',
+          durationMs: Date.now() - start,
+          resultSummary: result.summary,
+        });
+        res.json(result);
+      } catch (err: any) {
+        logger.logAction({
+          action: 'verify_changes',
+          params: req.body || {},
+          status: 'error',
+          durationMs: Date.now() - start,
+          error: err.message,
+        });
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    app.post('/api/commit_and_push', async (req, res) => {
+      const start = Date.now();
+      const sessionId = getSessionId(req);
+      try {
+        const { message, files, branch, remote, push, project, cwd } = req.body || {};
+        if (!message) {
+          return res.status(400).json({ error: 'message is required' });
+        }
+        const perm = services.projectService.checkPermission('write', cwd, project, sessionId);
+        if (!perm.allowed) {
+          return res.status(403).json({ error: perm.reason || 'Permission denied' });
+        }
+        const result = await workflowCompoundService.commitAndPush({
+          message,
+          files,
+          branch,
+          remote,
+          push,
+          project,
+          cwd,
+          sessionId,
+        });
+        logger.logAction({
+          action: 'commit_and_push',
+          params: { message, files, branch, remote, push, project },
+          status: result.status === 'error' ? 'error' : 'success',
+          durationMs: Date.now() - start,
+          resultSummary: result.summary,
+        });
+        res.json(result);
+      } catch (err: any) {
+        logger.logAction({
+          action: 'commit_and_push',
+          params: req.body || {},
+          status: 'error',
+          durationMs: Date.now() - start,
+          error: err.message,
+        });
+        res.status(500).json({ error: err.message });
       }
     });
 
@@ -2197,19 +2349,27 @@ export function startSseTransport(
 
     app.post('/api/search_context', async (req, res) => {
       const start = Date.now();
+      const sessionId = getSessionId(req);
       try {
-        const { query, context_lines, is_regex, case_sensitive, file_pattern, cwd } = req.body || {};
+        const { query, context_lines, is_regex, case_sensitive, file_pattern, cwd, project, mode, max_results } = req.body || {};
         if (!query) return res.status(400).json({ error: 'query is required' });
+        const perm = services.projectService.checkPermission('read', cwd, project, sessionId);
+        if (!perm.allowed) {
+          return res.status(403).json({ error: perm.reason });
+        }
+        const effectiveContextLines = mode === 'exact' ? 0 : (context_lines ?? 2);
         const result = await services.searchService.searchWithContext(query, {
-          contextLines: context_lines,
+          contextLines: effectiveContextLines,
           isRegex: is_regex,
           caseSensitive: case_sensitive,
           filePattern: file_pattern,
           customCwd: cwd,
+          maxResults: max_results,
+          project,
         });
         logger.logAction({
           action: 'search_context',
-          params: { query },
+          params: { query, mode, project },
           status: 'success',
           durationMs: Date.now() - start,
           resultSummary: `Found ${result.totalMatches} matches in ${result.filesCount} files`,

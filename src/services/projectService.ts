@@ -103,6 +103,7 @@ export class ProjectService {
   private globalPermissionsFile: string;
   private globalPermissions: GlobalPermissions = { ...DEFAULT_GLOBAL_PERMISSIONS };
   private projects: Map<string, ProjectInfo> = new Map();
+  private activeProjectMap: Map<string, string> = new Map();
   private pendingProjectRemovals: Map<string, PendingProjectRemoval> = new Map();
   private readonly projectRemovalTtlMs = 5 * 60 * 1000;
 
@@ -762,6 +763,8 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
       project = Array.from(this.projects.values()).find(
         (p) => (p.id && p.id.toLowerCase() === projectName.toLowerCase()) || (p.name && p.name.toLowerCase() === projectName.toLowerCase())
       ) || null;
+    } else {
+      project = this.getActiveProject(sessionId);
     }
 
     if (!project && projectName) {
@@ -774,7 +777,7 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
     if (!project) {
       return {
         allowed: false,
-        reason: `[PROJECT_REQUIRED] Every project-scoped operation must specify a project.`,
+        reason: `[PROJECT_REQUIRED] Every project-scoped operation must specify a project, or call open_project() first.`,
       };
     }
 
@@ -847,6 +850,37 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
     return copy;
   }
 
+  public getActiveProject(sessionId: string = 'global'): ProjectInfo | null {
+    const boundId = this.activeProjectMap.get(sessionId) || this.activeProjectMap.get('global');
+    if (boundId && this.projects.has(boundId)) {
+      return this.projects.get(boundId)!;
+    }
+    // If only one project is registered in the workspace, auto-default to it
+    if (this.projects.size === 1) {
+      const single = Array.from(this.projects.values())[0];
+      this.activeProjectMap.set(sessionId, single.id);
+      return single;
+    }
+    return null;
+  }
+
+  public setActiveProject(projectNameOrId: string, sessionId: string = 'global'): ProjectInfo {
+    const target = projectNameOrId.trim().toLowerCase();
+    const project = Array.from(this.projects.values()).find(
+      (p) => (p.id && p.id.toLowerCase() === target) || (p.name && p.name.toLowerCase() === target)
+    );
+    if (!project) {
+      throw new Error(`Project "${projectNameOrId}" not found in registered workspaces.`);
+    }
+    this.activeProjectMap.set(sessionId, project.id);
+    project.lastUsedAt = new Date().toISOString();
+    return project;
+  }
+
+  public openProject(projectNameOrId: string, sessionId: string = 'global'): ProjectInfo {
+    return this.setActiveProject(projectNameOrId, sessionId);
+  }
+
   public ensureWithinProject(
     targetPath: string,
     customCwd?: string,
@@ -858,11 +892,16 @@ ${canUseHandoff ? `5. **Memory Compaction & Session Handoff (HANDOFF.md)**:
       project = Array.from(this.projects.values()).find(
         (p) => (p.id && p.id.toLowerCase() === projectName.toLowerCase()) || (p.name && p.name.toLowerCase() === projectName.toLowerCase())
       ) || null;
+      if (project) {
+        this.activeProjectMap.set(sessionId, project.id);
+      }
+    } else {
+      project = this.getActiveProject(sessionId);
     }
 
     if (!project) {
       throw new Error(
-        `[PROJECT_REQUIRED] Every project-scoped operation must specify a project.`
+        `[PROJECT_REQUIRED] Every project-scoped operation must specify a project, or call open_project() first.`
       );
     }
 

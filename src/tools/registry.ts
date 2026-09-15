@@ -15,6 +15,7 @@ export interface PublicToolMetadata {
 
 const definitions: PublicToolMetadata[] = [
   { name: 'list_projects', capability: 'none', mutation: false, snapshotPolicy: 'none', audit: false, compatibility: 'legacy-compatible' },
+  { name: 'open_project', capability: 'none', mutation: false, snapshotPolicy: 'none', audit: false, compatibility: 'v2-native' },
   { name: 'add_project', capability: 'none', mutation: true, snapshotPolicy: 'none', audit: true, compatibility: 'legacy-compatible' },
   { name: 'create_project', capability: 'none', mutation: true, snapshotPolicy: 'none', audit: true, compatibility: 'v2-native' },
   { name: 'prepare_project_removal', capability: 'none', mutation: false, snapshotPolicy: 'none', audit: true, compatibility: 'legacy-compatible' },
@@ -56,6 +57,8 @@ const definitions: PublicToolMetadata[] = [
   { name: 'git_unstage', capability: 'gitCommit', mutation: true, snapshotPolicy: 'observe', audit: true, compatibility: 'v2-native' },
   { name: 'git_show', capability: 'read', mutation: false, snapshotPolicy: 'observe', audit: false, compatibility: 'v2-native' },
   { name: 'git_sync_status', capability: 'read', mutation: false, snapshotPolicy: 'observe', audit: false, compatibility: 'legacy-compatible' },
+  { name: 'verify_changes', capability: 'read', mutation: false, snapshotPolicy: 'observe', audit: false, compatibility: 'v2-native' },
+  { name: 'commit_and_push', capability: 'gitCommit', mutation: true, snapshotPolicy: 'observe', audit: true, compatibility: 'v2-native' },
   { name: 'list_worktrees', capability: 'read', mutation: false, snapshotPolicy: 'observe', audit: false, compatibility: 'legacy-compatible' },
   { name: 'compare_branches', capability: 'read', mutation: false, snapshotPolicy: 'observe', audit: false, compatibility: 'legacy-compatible' },
   { name: 'close_feature_branch', capability: 'deleteBranches', mutation: true, snapshotPolicy: 'required', audit: true, compatibility: 'legacy-compatible' },

@@ -54,6 +54,7 @@ export class SnapshotService {
   private projectService: ProjectService;
   private gitService: GitService;
   private memoryService: MemoryService;
+  private observedSessionHashes = new Map<string, string>();
 
   constructor(
     projectService: ProjectService,
@@ -72,11 +73,15 @@ export class SnapshotService {
     sessionId?: string;
     compact?: boolean;
   }): Promise<ProjectSnapshot> {
-    if (!options?.project) {
-      throw new Error('Snapshot requires explicit project.');
+    const projectName = options?.project || this.projectService.getActiveProject(options?.sessionId)?.name;
+    if (!projectName) {
+      throw new Error('Snapshot requires explicit project or call open_project() first.');
     }
-    const targetProject = this.projectService.getRequiredProject(options.project);
-    const rootPath = this.projectService.resolveWorkingDir(options?.customCwd, options.project);
+    const targetProject = this.projectService.getRequiredProject(projectName);
+    const rootPath = this.projectService.resolveWorkingDir(options?.customCwd, projectName);
+    if (options?.sessionId && targetProject?.id) {
+      this.projectService.setActiveProject(targetProject.id, options.sessionId);
+    }
 
     // 1. Fetch Git status & recent commits
     let gitInfo = {
@@ -142,10 +147,14 @@ export class SnapshotService {
     const rawInstructions = instructionRes.content || '';
     const contentHash = crypto.createHash('sha256').update(rawInstructions, 'utf-8').digest('hex');
 
+    const sessionKey = `${options?.sessionId || 'global'}:${rootPath}`;
+    const sessionObservedHash = this.observedSessionHashes.get(sessionKey);
     const isUnchanged = Boolean(
-      options?.knownInstructionHash &&
-      options.knownInstructionHash.trim().toLowerCase() === contentHash.toLowerCase()
+      (options?.knownInstructionHash &&
+        options.knownInstructionHash.trim().toLowerCase() === contentHash.toLowerCase()) ||
+      (options?.sessionId && sessionObservedHash === contentHash)
     );
+    this.observedSessionHashes.set(sessionKey, contentHash);
 
     const isCompact = options?.compact === true;
 

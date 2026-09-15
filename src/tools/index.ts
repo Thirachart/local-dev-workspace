@@ -15,6 +15,7 @@ import { DiagnosticParserService } from '../services/diagnosticParserService.js'
 import { TestRunnerService } from '../services/testRunnerService.js';
 import { WorkspaceHealthService } from '../services/workspaceHealthService.js';
 import { ProductivityService } from '../services/productivityService.js';
+import { WorkflowCompoundService } from '../services/workflowCompoundService.js';
 import { ContextLedger } from '../context/contextLedger.js';
 import { DeliveryPlanner } from '../context/deliveryPlanner.js';
 import { sha256Content } from '../context/contentFingerprint.js';
@@ -119,8 +120,7 @@ export function registerTools(
     memoryService,
     process.cwd()
   );
-
-
+  const workflowCompoundService = new WorkflowCompoundService(diagnosticService, gitService, projectService);
   const deliveryPlanner = new DeliveryPlanner(contextLedger);
   const permissionGuard = new ProjectPermissionGuard(projectService);
   const coreSnapshotManager = new SnapshotManager(processService, process.cwd(), projectService);
@@ -247,7 +247,33 @@ export function registerTools(
     }
   );
 
-  // active project tools removed. Project operations are explicit.
+  // open_project
+  registerTool(
+    'open_project',
+    'Open a project workspace and bind it to the current session. Subsequent tool calls will automatically default to this active project without needing to pass the project parameter.',
+    {
+      name: z.string().describe('Unique name or ID of the registered project to open and bind to this session'),
+    },
+    async ({ name }, extra: ToolExtra) => {
+      try {
+        const proj = projectService.openProject(name, extra?.sessionId);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                status: 'opened',
+                message: `Project "${proj.name}" is now the active project for this session.`,
+                project: projectService.sanitizeProjectForClient(proj),
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return { isError: true, content: [{ type: 'text', text: `Failed to open project: ${err.message}` }] };
+      }
+    }
+  );
 
   // 4. add_project
   registerTool(
@@ -351,7 +377,11 @@ export function registerTools(
     },
     async ({ project, path, start_line, end_line, known_sha256, cwd }, extra?: ToolExtra) => {
       try {
-        const projectInfo = projectService.getRequiredProject(project);
+        const projectName = project || projectService.getActiveProject(extra?.sessionId)?.name;
+        if (!projectName) {
+          throw new Error('Project is required or call open_project() first.');
+        }
+        const projectInfo = projectService.getRequiredProject(projectName);
         const projectId = projectInfo.id || projectInfo.name;
         const deliveryScope = deliveryScopeResolver?.resolve(extra, projectId) ?? {
           knowledgeScope: 'unknown' as const,
@@ -361,7 +391,9 @@ export function registerTools(
           startLine: start_line,
           endLine: end_line,
           customCwd: cwd,
-          project,
+          project: projectName,
+          knownSha256: known_sha256,
+          sessionId: extra?.sessionId,
         });
 
         const key = `${result.resolvedPath}:${result.startLine}-${result.endLine}`;
@@ -727,15 +759,19 @@ export function registerTools(
       is_daemon: z.boolean().optional().describe('Set to true for long-running processes (dev servers, watchers) to run in the background'),
       detach_on_timeout: z.boolean().optional().describe('For synchronous commands only: keep the process running after timeout and return a task ID. Defaults to false, so timed-out foreground commands are terminated.'),
     },
-    async ({ project, command, cwd, timeout_ms, is_daemon, detach_on_timeout }) => {
+    async ({ project, command, cwd, timeout_ms, is_daemon, detach_on_timeout }, extra?: ToolExtra) => {
       try {
+        const projectName = project || projectService.getActiveProject(extra?.sessionId)?.name;
+        if (!projectName) {
+          throw new Error('Project is required or call open_project() first.');
+        }
         const result = await processService.runCommand({
           command,
           cwd,
           timeoutMs: timeout_ms,
           isDaemon: is_daemon,
           detachOnTimeout: detach_on_timeout,
-          projectName: project,
+          projectName,
         });
         return {
           content: [
@@ -862,9 +898,13 @@ export function registerTools(
       project: z.string().describe('Required registered project name or id'),
       cwd: z.string().optional().describe('Optional custom working directory'),
     },
-    async ({ project, cwd }) => {
+    async ({ project, cwd }, extra?: ToolExtra) => {
       try {
-        const result = await gitService.getStatus({ customCwd: cwd, project });
+        const projectName = project || projectService.getActiveProject(extra?.sessionId)?.name;
+        if (!projectName) {
+          throw new Error('Project is required or call open_project() first.');
+        }
+        const result = await gitService.getStatus({ customCwd: cwd, project: projectName });
         return {
           content: [
             {
@@ -1062,8 +1102,28 @@ export function registerTools(
   // 21. apply_patch
   registerTool(
     'apply_patch',
-    'Apply multi-file or multi-block surgical code edits in a single operation. Supports unified diff format (patch/diff) or structured file ops (files/chunks).',
+    'Apply multi-file or multi-block surgical code edits in a single operation. Supports streamlined edits/create, unified diff (patch/diff), or chunks.',
     {
+      edits: z
+        .array(
+          z.object({
+            path: z.string().describe('Relative file path within project to patch'),
+            find: z.string().describe('Exact code snippet to find'),
+            replace: z.string().describe('New code snippet to replace with'),
+            allowMultiple: z.boolean().optional().describe('Allow replacing multiple occurrences'),
+          })
+        )
+        .optional()
+        .describe('Streamlined list of surgical find-and-replace edits across files'),
+      create: z
+        .array(
+          z.object({
+            path: z.string().describe('Relative file path to create'),
+            content: z.string().describe('Content to write to the file'),
+          })
+        )
+        .optional()
+        .describe('List of new files to create atomically'),
       patch: z.string().optional().describe('Unified diff text format (alias for diff)'),
       diff: z.string().optional().describe('Standard Unified Diff string format (alias for patch)'),
       files: z.array(z.any()).optional().describe('Structured list of file operations (alias for chunks)'),
@@ -1083,18 +1143,39 @@ export function registerTools(
       cwd: z.string().optional().describe('Custom working directory relative to project root'),
       project: z.string().describe('Required registered project name or id'),
     },
-    async (args: any) => {
+    async (args: any, extra?: ToolExtra) => {
       try {
-        const { cwd, project } = args;
+        const cwd = args.cwd;
+        const project = args.project || projectService.getActiveProject(extra?.sessionId)?.name;
+        if (!project) {
+          throw new Error('Project is required or call open_project() first.');
+        }
         const perm = projectService.checkPermission('write', cwd, project);
         if (!perm.allowed) {
           return { isError: true, content: [{ type: 'text', text: perm.reason || 'Permission denied' }] };
         }
 
-        const diffInput = args.diff || args.patch;
-        const chunksInput = args.chunks || args.files;
+        const createdFiles: string[] = [];
+        if (args.create && Array.isArray(args.create) && args.create.length > 0) {
+          for (const item of args.create) {
+            await fileService.writeFile(item.path, item.content, { customCwd: cwd, project, mode: 'force' });
+            createdFiles.push(item.path);
+          }
+        }
 
-        let result;
+        const diffInput = args.diff || args.patch;
+        let chunksInput = args.chunks || args.files;
+
+        if (args.edits && Array.isArray(args.edits) && args.edits.length > 0) {
+          chunksInput = args.edits.map((e: any) => ({
+            filePath: e.path,
+            targetContent: e.find,
+            replacementContent: e.replace,
+            allowMultiple: e.allowMultiple,
+          }));
+        }
+
+        let result: any;
         if (chunksInput && Array.isArray(chunksInput) && chunksInput.length > 0) {
           const normalizedChunks = chunksInput.map((c: any) => ({
             filePath: c.filePath || c.path,
@@ -1107,20 +1188,37 @@ export function registerTools(
           const journaled = await productivityService.journalMutation('patch', patchPaths, { project, cwd }, () =>
             patchService.applyStructuredPatch(normalizedChunks, { customCwd: cwd, project }),
           );
-          result = { ...journaled.result, operationId: journaled.mutation.operationId, undoAvailable: journaled.mutation.undoable };
+          result = {
+            ...journaled.result,
+            createdFiles: createdFiles.length > 0 ? createdFiles : undefined,
+            operationId: journaled.mutation.operationId,
+            undoAvailable: journaled.mutation.undoable,
+          };
         } else if (diffInput && typeof diffInput === 'string' && diffInput.trim()) {
           const patchPaths = productivityService.extractPatchPaths({ diff: diffInput });
           const journaled = await productivityService.journalMutation('patch', patchPaths, { project, cwd }, () =>
             patchService.applyUnifiedDiff(diffInput, { customCwd: cwd, project }),
           );
-          result = { ...journaled.result, operationId: journaled.mutation.operationId, undoAvailable: journaled.mutation.undoable };
+          result = {
+            ...journaled.result,
+            createdFiles: createdFiles.length > 0 ? createdFiles : undefined,
+            operationId: journaled.mutation.operationId,
+            undoAvailable: journaled.mutation.undoable,
+          };
+        } else if (createdFiles.length > 0) {
+          result = {
+            success: true,
+            appliedCount: createdFiles.length,
+            filesModified: [],
+            createdFiles,
+          };
         } else {
           return {
             isError: true,
             content: [
               {
                 type: 'text',
-                text: 'Must provide patch/diff (unified diff text) or files/chunks (structured replace operations). Example payload: { "patch": "--- a/file.txt\\n+++ b/file.txt\\n@@ -1 +1 @@\\n-old\\n+new" }',
+                text: 'Must provide edits: [{ path, find, replace }] or create: [{ path, content }] or unified diff patch.',
               },
             ],
           };
@@ -1180,18 +1278,22 @@ export function registerTools(
       cwd: z.string().optional().describe('Custom working directory relative to project root'),
       project: z.string().describe('Required registered project name or id'),
     },
-    async ({ message, files, expected_snapshot_id, expected_git_observation_id, expected_file_hashes, verification_command, allow_empty, cwd, project }) => {
+    async ({ message, files, expected_snapshot_id, expected_git_observation_id, expected_file_hashes, verification_command, allow_empty, cwd, project }, extra?: ToolExtra) => {
       try {
-        const perm = projectService.checkPermission('write', cwd, project);
+        const projectName = project || projectService.getActiveProject(extra?.sessionId)?.name;
+        if (!projectName) {
+          throw new Error('Project is required or call open_project() first.');
+        }
+        const perm = projectService.checkPermission('write', cwd, projectName);
         if (!perm.allowed) {
           return { isError: true, content: [{ type: 'text', text: perm.reason || 'Permission denied' }] };
         }
 
-        const workingDir = projectService.resolveWorkingDir(cwd, project);
+        const workingDir = projectService.resolveWorkingDir(cwd, projectName);
         const result = await safeGitCommit(processService, workingDir, {
           message,
           files,
-          project,
+          project: projectName,
           expectedSnapshotId: expected_snapshot_id,
           expectedGitObservationId: expected_git_observation_id,
           expectedFileHashes: expected_file_hashes,
@@ -1219,14 +1321,18 @@ export function registerTools(
       command: z.string().optional().describe('Explicit project diagnostic command. Recommended for Python and other projects without declared scripts; it is executed exactly as provided.'),
       project: z.string().describe('Required registered project name or id'),
     },
-    async ({ task, cwd, command, project }) => {
+    async ({ task, cwd, command, project }, extra?: ToolExtra) => {
       try {
-        const perm = projectService.checkPermission('command', cwd, project);
+        const projectName = project || projectService.getActiveProject(extra?.sessionId)?.name;
+        if (!projectName) {
+          throw new Error('Project is required or call open_project() first.');
+        }
+        const perm = projectService.checkPermission('command', cwd, projectName);
         if (!perm.allowed) {
           return { isError: true, content: [{ type: 'text', text: perm.reason || 'Permission denied' }] };
         }
 
-        const result = await diagnosticService.runDiagnostics(task, { customCwd: cwd, project, command });
+        const result = await diagnosticService.runDiagnostics(task, { customCwd: cwd, project: projectName, command });
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         };
@@ -1248,15 +1354,20 @@ export function registerTools(
       project: z.string().describe('Required registered project name or id'),
       cwd: z.string().optional().describe('Optional working directory inside the selected project; relative paths resolve from its root'),
     },
-    async ({ compact, known_instruction_hash, project, cwd }) => {
+    async ({ compact, known_instruction_hash, project, cwd }, extra?: ToolExtra) => {
       try {
+        const projectName = project || projectService.getActiveProject(extra?.sessionId)?.name;
+        if (!projectName) {
+          throw new Error('Project is required or call open_project() first.');
+        }
         const snapshot = await snapshotService.getSnapshot({
           compact,
           knownInstructionHash: known_instruction_hash,
-          project,
+          project: projectName,
           customCwd: cwd,
+          sessionId: extra?.sessionId,
         });
-        const observation = await coreSnapshotManager.getObservationToken(cwd, project);
+        const observation = await coreSnapshotManager.getObservationToken(cwd, projectName);
         return {
           content: [{ type: 'text', text: JSON.stringify({
             ...snapshot,
@@ -1302,9 +1413,13 @@ export function registerTools(
       project: z.string().describe('Required registered project name or id'),
       cwd: z.string().optional().describe('Custom working directory'),
     },
-    async ({ file_path, symbol_name, project, cwd }) => {
+    async ({ file_path, symbol_name, project, cwd }, extra?: ToolExtra) => {
       try {
-        const result = await symbolService.readSymbol(file_path, symbol_name, { customCwd: cwd, project });
+        const projectName = project || projectService.getActiveProject(extra?.sessionId)?.name;
+        if (!projectName) {
+          throw new Error('Project is required or call open_project() first.');
+        }
+        const result = await symbolService.readSymbol(file_path, symbol_name, { customCwd: cwd, project: projectName });
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         };
@@ -1377,6 +1492,63 @@ export function registerTools(
       }
     }
   );
+  // --- COMPOUND WORKFLOW TOOLS (WINSPACE vNEXT) ---
+
+  // verify_changes
+  registerTool(
+    'verify_changes',
+    'Compound verification workflow: runs typecheck -> build -> tests -> git status in a single roundtrip. Returns a compact PASS / FAIL summary.',
+    {
+      project: z.string().describe('Required registered project name or id'),
+      cwd: z.string().optional().describe('Custom working directory relative to project root'),
+      skip_tests: z.boolean().optional().describe('Skip test execution if only checking build and typecheck (default false)'),
+    },
+    async ({ project, cwd, skip_tests }, extra?: ToolExtra) => {
+      try {
+        const result = await workflowCompoundService.verifyChanges({
+          project,
+          cwd,
+          skipTests: skip_tests,
+          sessionId: extra?.sessionId,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err: any) {
+        return { isError: true, content: [{ type: 'text', text: `Verify changes error: ${err.message}` }] };
+      }
+    }
+  );
+
+  // commit_and_push
+  registerTool(
+    'commit_and_push',
+    'Compound git workflow: stages all changes, creates a git commit, and pushes to remote in a single roundtrip.',
+    {
+      message: z.string().describe('Commit message describing the changes made'),
+      project: z.string().describe('Required registered project name or id'),
+      cwd: z.string().optional().describe('Custom working directory relative to project root'),
+      branch: z.string().optional().describe('Optional target git branch (defaults to current active branch)'),
+      remote: z.string().optional().describe('Optional git remote (defaults to origin)'),
+    },
+    async ({ message, project, cwd, branch, remote }, extra?: ToolExtra) => {
+      try {
+        const result = await workflowCompoundService.commitAndPush({
+          message,
+          project,
+          cwd,
+          branch,
+          remote,
+          sessionId: extra?.sessionId,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err: any) {
+        return { isError: true, content: [{ type: 'text', text: `Commit and push error: ${err.message}` }] };
+      }
+    }
+  );
 
   // --- DIAGNOSTICS & VERIFICATION TOOLS ---
 
@@ -1443,27 +1615,33 @@ export function registerTools(
   // 40. search_context
   registerTool(
     'search_context',
-    'Search for text across project files, returning results grouped by file with surrounding context lines.',
+    'Search for text across project files. Supports mode="context" (surrounding lines) or mode="exact" (precise matches only, replaces search_files).',
     {
-      project: z.string().describe('Required registered project name or id'),
       query: z.string().describe('Search query text or regex'),
-      context_lines: z.number().optional().describe('Number of lines of context before and after each match (default: 2)'),
+      mode: z.enum(['context', 'exact']).optional().describe('Search mode: "context" (default) or "exact" (fast precise lines)'),
+      context_lines: z.number().optional().describe('Number of lines of context before and after each match (default: 2; ignored if mode="exact")'),
       is_regex: z.boolean().optional().describe('Whether query is regex'),
       case_sensitive: z.boolean().optional().describe('Case sensitive match'),
       file_pattern: z.string().optional().describe('Optional file glob pattern'),
       cwd: z.string().optional().describe('Custom working directory'),
+      project: z.string().describe('Required registered project name or id'),
       max_results: z.number().optional().describe('Max matching lines (default: 60)'),
     },
-    async ({ project, query, context_lines, is_regex, case_sensitive, file_pattern, cwd, max_results }) => {
+    async ({ project, query, mode = 'context', context_lines = 2, is_regex, case_sensitive, file_pattern, cwd, max_results }, extra?: ToolExtra) => {
       try {
+        const projectName = project || projectService.getActiveProject(extra?.sessionId)?.name;
+        if (!projectName) {
+          throw new Error('Project is required or call open_project() first.');
+        }
+        const effectiveContextLines = mode === 'exact' ? 0 : context_lines;
         const result = await searchService.searchWithContext(query, {
-          contextLines: context_lines,
+          contextLines: effectiveContextLines,
           isRegex: is_regex,
           caseSensitive: case_sensitive,
           filePattern: file_pattern,
           customCwd: cwd,
           maxResults: max_results,
-          project,
+          project: projectName,
         });
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
@@ -1714,9 +1892,13 @@ export function registerTools(
       cwd: z.string().optional().describe('Optional repository working directory'),
       project: z.string().describe('Required registered project name or id'),
     },
-    async ({ branch, remote, setUpstream, force, dryRun, cwd, project }) => {
+    async ({ branch, remote, setUpstream, force, dryRun, cwd, project }, extra?: ToolExtra) => {
       try {
-        const perm = projectService.checkPermission('command', cwd, project);
+        const projectName = project || projectService.getActiveProject(extra?.sessionId)?.name;
+        if (!projectName) {
+          throw new Error('Project is required or call open_project() first.');
+        }
+        const perm = projectService.checkPermission('command', cwd, projectName);
         if (!perm.allowed) {
           return { isError: true, content: [{ type: 'text', text: perm.reason || 'Permission denied' }] };
         }
@@ -1727,7 +1909,7 @@ export function registerTools(
           force,
           dryRun,
           customCwd: cwd,
-          project,
+          project: projectName,
         });
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],

@@ -45,28 +45,33 @@ export const MCP_INVOKE_SCHEMA = {
 
 export function getToolCatalog() {
   return [
-    { path: '/api/workspace_health', name: 'workspace_health', category: 'Workspace & Health', description: 'Fast 1-call comprehensive workspace health & state hub' },
+    { path: '/api/open_project', name: 'open_project', category: 'Workspace & Health', description: 'Bind active project for session context' },
     { path: '/api/get_project_snapshot', name: 'get_project_snapshot', category: 'Workspace & Health', description: 'Comprehensive project snapshot with files, git state, and README' },
+    { path: '/api/search_context', name: 'search_context', category: 'Search & Code Intel', description: 'Search text with surrounding context or exact lines' },
+    { path: '/api/read_symbol', name: 'read_symbol', category: 'Search & Code Intel', description: 'Read definition of class, method, or function' },
+    { path: '/api/read_file', name: 'read_file', category: 'File Operations', description: 'Read file contents from active project' },
+    { path: '/api/apply_patch', name: 'apply_patch', category: 'File Operations', description: 'Apply clean edits, create files, or unified diff safely' },
+    { path: '/api/project_diagnostics', name: 'project_diagnostics', category: 'Diagnostics & Testing', description: 'Run compiler and typecheck diagnostics' },
+    { path: '/api/run_command', name: 'run_command', category: 'Terminal & Process', description: 'Execute shell command inside project directory' },
+    { path: '/api/git_status', name: 'git_status', category: 'Git Workflow', description: 'Get git status (modified, staged, untracked)' },
+    { path: '/api/git_commit', name: 'git_commit', category: 'Git Workflow', description: 'Stage files and commit to git' },
+    { path: '/api/git_push', name: 'git_push', category: 'Git Workflow', description: 'Push committed changes to remote repository' },
+    { path: '/api/verify_changes', name: 'verify_changes', category: 'Diagnostics & Testing', description: 'Compound 1-call verify: typecheck, build, test, and git status' },
+    { path: '/api/commit_and_push', name: 'commit_and_push', category: 'Git Workflow', description: 'Compound 1-call stage, commit, and push' },
+    { path: '/api/workspace_health', name: 'workspace_health', category: 'Workspace & Health', description: 'Fast 1-call comprehensive workspace health & state hub' },
     { path: '/api/list_projects', name: 'list_projects', category: 'Workspace & Health', description: 'List all registered projects and workspaces' },
     { path: '/api/create_project', name: 'create_project', category: 'Workspace & Health', description: 'Create a new project directory and register it explicitly' },
-            { path: '/api/project_overview', name: 'project_overview', category: 'Workspace & Health', description: 'Quick project overview and summary' },
-    { path: '/api/read_file', name: 'read_file', category: 'File Operations', description: 'Read file contents from active project' },
+    { path: '/api/project_overview', name: 'project_overview', category: 'Workspace & Health', description: 'Quick project overview and summary' },
     { path: '/api/write_file', name: 'write_file', category: 'File Operations', description: 'Create or overwrite file in active project' },
     { path: '/api/edit_file', name: 'edit_file', category: 'File Operations', description: 'Search and replace precise code snippet in a file' },
-    { path: '/api/apply_patch', name: 'apply_patch', category: 'File Operations', description: 'Apply unified diff patch safely' },
     { path: '/api/list_directory', name: 'list_directory', category: 'File Operations', description: 'List contents of a directory' },
     { path: '/api/get_file_info', name: 'get_file_info', category: 'File Operations', description: 'Get file metadata and size' },
     { path: '/api/grep_search', name: 'grep_search', category: 'Search & Code Intel', description: 'Fast ripgrep text/regex search across codebase' },
     { path: '/api/find_by_name', name: 'find_by_name', category: 'Search & Code Intel', description: 'Fast glob filename search' },
     { path: '/api/symbol_index', name: 'symbol_index', category: 'Search & Code Intel', description: 'Index and search code symbols (classes, functions, types)' },
-    { path: '/api/git_status', name: 'git_status', category: 'Git Workflow', description: 'Get git status (modified, staged, untracked)' },
     { path: '/api/git_diff', name: 'git_diff', category: 'Git Workflow', description: 'Get git diff against HEAD or staged' },
     { path: '/api/git_log', name: 'git_log', category: 'Git Workflow', description: 'View recent git commit history' },
-    { path: '/api/git_commit', name: 'git_commit', category: 'Git Workflow', description: 'Stage files and commit to git' },
     { path: '/api/git_branch', name: 'git_branch', category: 'Git Workflow', description: 'Inspect or manage git branches' },
-    { path: '/api/git_push', name: 'git_push', category: 'Git Workflow', description: 'Push committed changes to remote repository' },
-    { path: '/api/run_command', name: 'run_command', category: 'Terminal & Process', description: 'Execute shell command inside project directory' },
-
     { path: '/api/list_skills', name: 'list_skills', category: 'Agent & Extension', description: 'Discover agent skills installed in project or global configuration' },
     { path: '/api/read_skill', name: 'read_skill', category: 'Agent & Extension', description: 'Read instructions and script contents of a specific skill' },
     { path: '/api/write_handoff', name: 'write_handoff', category: 'Agent & Extension', description: 'Write session handoff notes for long-running workflows' },
@@ -98,6 +103,30 @@ export function getOpenApiSpec(hostUrl: string, profile: OpenApiProfile = 'core'
           },
         },
         responses: { '200': { description: 'Workspace health report' } },
+      },
+    },
+    '/api/get_project_snapshot': {
+      post: {
+        summary: 'Comprehensive project snapshot with files, git state, and README',
+        description: 'Get project snapshot with git branch, head commit, status, instructions, and handoff. Supports delta via known_instruction_hash.',
+        operationId: 'getProjectSnapshot',
+        'x-openai-isConsequential': false,
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  known_instruction_hash: { type: 'string', description: 'Pass previous instruction SHA256 to avoid redundant text dump' },
+                  compact: { type: 'boolean', description: 'Return compact observation tokens' },
+                  project: { type: 'string', description: 'Optional project name (defaults to active project)' },
+                  cwd: { type: 'string', description: 'Custom working directory' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Project snapshot result' } },
       },
     },
     '/api/mcp_invoke': {
@@ -247,6 +276,32 @@ export function getOpenApiSpec(hostUrl: string, profile: OpenApiProfile = 'core'
               schema: {
                 type: 'object',
                 properties: {
+                  edits: {
+                    type: 'array',
+                    description: 'Streamlined list of edits: [{ path, find, replace, allowMultiple }]',
+                    items: {
+                      type: 'object',
+                      required: ['path', 'find', 'replace'],
+                      properties: {
+                        path: { type: 'string', description: 'Relative file path' },
+                        find: { type: 'string', description: 'Exact code snippet to find' },
+                        replace: { type: 'string', description: 'Replacement code' },
+                        allowMultiple: { type: 'boolean', description: 'Allow multiple replacements' },
+                      },
+                    },
+                  },
+                  create: {
+                    type: 'array',
+                    description: 'List of files to create: [{ path, content }]',
+                    items: {
+                      type: 'object',
+                      required: ['path', 'content'],
+                      properties: {
+                        path: { type: 'string', description: 'Relative file path' },
+                        content: { type: 'string', description: 'Full file content' },
+                      },
+                    },
+                  },
                   patch: { type: 'string', description: 'Unified diff text format (alias for diff)' },
                   diff: { type: 'string', description: 'Standard Unified Diff string format (alias for patch)' },
                   files: {
@@ -804,6 +859,121 @@ export function getOpenApiSpec(hostUrl: string, profile: OpenApiProfile = 'core'
         responses: { '200': { description: 'System prompt content' } },
       },
     },
+    '/api/open_project': {
+      post: {
+        summary: 'Open and bind active project for session',
+        description: 'Bind project context for the current session. Subsequent calls can omit the project parameter.',
+        operationId: 'openProject',
+        'x-openai-isConsequential': false,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['project'],
+                properties: {
+                  project: { type: 'string', description: 'Project name or path to bind' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Project bound successfully' } },
+      },
+    },
+    '/api/search_context': {
+      post: {
+        summary: 'Search code with context or exact matches',
+        description: 'Search across project files. Supports mode="context" (surrounding lines) or mode="exact" (precise matches only).',
+        operationId: 'searchContext',
+        'x-openai-isConsequential': false,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['query'],
+                properties: {
+                  query: { type: 'string', description: 'Search query string or regex' },
+                  mode: { type: 'string', enum: ['context', 'exact'], description: 'Search mode: context (default) or exact' },
+                  context_lines: { type: 'integer', description: 'Lines of context before/after (default: 2)' },
+                  is_regex: { type: 'boolean', description: 'Whether query is regex' },
+                  case_sensitive: { type: 'boolean', description: 'Case sensitive match' },
+                  file_pattern: { type: 'string', description: 'File glob filter' },
+                  max_results: { type: 'integer', description: 'Maximum matches to return' },
+                  project: { type: 'string', description: 'Optional project name (defaults to active project)' },
+                  cwd: { type: 'string', description: 'Custom working directory' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Search results' } },
+      },
+    },
+    '/api/verify_changes': {
+      post: {
+        summary: 'Compound 1-call verify: typecheck, build, test, and git status',
+        description: 'Run comprehensive validation in one roundtrip: typecheck -> build -> tests -> git status.',
+        operationId: 'verifyChanges',
+        'x-openai-isConsequential': false,
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  tasks: {
+                    type: 'array',
+                    items: { type: 'string', enum: ['typecheck', 'build', 'test'] },
+                    description: 'Tasks to run (default: all applicable: typecheck, build, test)',
+                  },
+                  testFilter: { type: 'string', description: 'Optional test filter' },
+                  project: { type: 'string', description: 'Optional project name (defaults to active project)' },
+                  cwd: { type: 'string', description: 'Custom working directory' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Verification results' } },
+      },
+    },
+    '/api/commit_and_push': {
+      post: {
+        summary: 'Compound 1-call stage, commit, and push',
+        description: 'Check git status, stage files, commit, and optionally push to remote in one single roundtrip.',
+        operationId: 'commitAndPush',
+        'x-openai-isConsequential': true,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['message'],
+                properties: {
+                  message: { type: 'string', description: 'Git commit message' },
+                  files: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Files to stage (default: all changed)',
+                  },
+                  branch: { type: 'string', description: 'Branch name (default: current)' },
+                  remote: { type: 'string', description: 'Remote name (default: origin)' },
+                  push: { type: 'boolean', description: 'Whether to push to remote (default: true)' },
+                  project: { type: 'string', description: 'Optional project name (defaults to active project)' },
+                  cwd: { type: 'string', description: 'Custom working directory' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Commit and push result' } },
+      },
+    },
   };
 
   // ChatGPT Actions can import a response that only has a description, but
@@ -830,36 +1000,41 @@ export function getOpenApiSpec(hostUrl: string, profile: OpenApiProfile = 'core'
   }
 
   const coreKeys = [
-    '/api/workspace_health',
-    '/api/list_projects',
+    '/api/open_project',
     '/api/get_project_snapshot',
-    '/api/read_project_instructions',
-    '/api/read_handoff',
-    '/api/write_handoff',
+    '/api/search_context',
+    '/api/read_symbol',
     '/api/read_file',
     '/api/write_file',
     '/api/apply_patch',
-    '/api/list_directory',
-    '/api/search_files',
-    '/api/find_files',
-    '/api/list_symbols',
-    '/api/read_symbol',
     '/api/project_diagnostics',
     '/api/run_command',
     '/api/git_status',
-    '/api/git_diff',
-    '/api/git_log',
     '/api/git_commit',
     '/api/git_branch',
     '/api/git_push',
+    '/api/verify_changes',
+    '/api/commit_and_push',
+    '/api/workspace_health',
     '/api/list_skills',
     '/api/read_skill',
   ];
 
-  const agentKeys = [...coreKeys];
+  const agentKeys = [
+    ...coreKeys,
+    '/api/workspace_health',
+    '/api/list_projects',
+    '/api/read_handoff',
+    '/api/write_handoff',
+    '/api/list_skills',
+    '/api/read_skill',
+  ];
 
   const extensionKeys = [
     ...coreKeys,
+    '/api/list_skills',
+    '/api/read_skill',
+    '/api/write_handoff',
   ];
 
   let selectedKeys: string[];
